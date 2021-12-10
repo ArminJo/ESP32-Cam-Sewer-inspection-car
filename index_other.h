@@ -90,6 +90,9 @@ const uint8_t index_simple_html[] = R"=====(<!doctype html>
                 <option value="0">THUMB (96x96)</option>
               </select>
             </div>
+            <div class="input-group" id="sys_info-group">
+              <a href="/dump" title="System Info" target="_blank">System Info</a>
+            </div>
             <!-- Hide the next entries, they are present in the body so that we
                 can pass settings to/from them for use in the scripting, not for user setting -->
             <div id="cam_name" class="default-action hidden"></div>

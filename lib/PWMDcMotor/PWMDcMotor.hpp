@@ -741,7 +741,7 @@ void PWMDcMotor::printSettings(Print *aSerial) {
 }
 
 //void PanicWithLed(unsigned int aDelay, uint8_t aCount) {
-//    for (uint8_t i = 0; i < aCount; ++i) {
+//    for (uint_fast8_t i = 0; i < aCount; ++i) {
 //        digitalWrite(LED_BUILTIN, HIGH);
 //        delay(aDelay);
 //        digitalWrite(LED_BUILTIN, LOW);

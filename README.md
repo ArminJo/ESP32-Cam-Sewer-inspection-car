@@ -5,7 +5,15 @@
 [![Build Status](https://github.com/ukw100/irmp/workflows/LibraryBuild/badge.svg)](https://github.com/ukw100/irmp/actions)
 ![Hit Counter](https://visitor-badge.laobi.icu/badge?page_id=ArminJo_ESP32-Cam-Sewer-inspection-car)
 
+A simple and small robot car using the well known yellow gear motors and wheels.
+It carries an ESP32-Cam monted on a pan servo.
+I used it to inspect my sewer pipes under the basement and up to the curb.
+
 Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver/tree/master/src) by Owen Carter.
+
+YouTube video of inspection car in action
+
+[![Inspection car in action](https://i.ytimg.com/vi/aUz2TU6FpmA/hqdefault.jpg)](https://www.youtube.com/watch?v=aUz2TU6FpmA)
 
 # Additional Features
 - Pan servo for the ESP32-Cam.
@@ -26,12 +34,12 @@ Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver
 | | |
 |-|-|
 | ![The car](pictures/Complete.jpg) | ![Front detail](pictures/FrontDetail.jpg) |
-| ![The body](pictures/WithoutWheels.jpg) | ![Front detail](pictures/2Wheels.jpg) |
+| ![Top view](pictures/Top.jpg) | ![Front detail](pictures/2Wheels.jpg) |
 | ![Front right](pictures/FrontRight.jpg) | ![Front left](pictures/FrontLeft.jpg) |
 | ![Front carrier](pictures/FrontCarrier.jpg) | ![MosFet bridge](pictures/MosFetBridge.jpg) |
 | Simple carrier glued to the servo | Connections at the TB6612FNG MosFet bridge breakout board |
-| ![3.3V LDO](pictures/TS2940Detail.jpg) | |
-| Details of the 3.3 volt LDO regulator assembly | |
+| ![3.3V LDO](pictures/TS2940Detail.jpg) | ![Details of the antenna](pictures/BackWithAntenna.jpg) |
+| Details of the 3.3 volt LDO regulator assembly | Details of the antenna (from an old laptop) |
 
 # Pictures of my sewer inspection
 | | |
@@ -42,8 +50,8 @@ Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver
 | The discovery | After cleaning |
 | ![Impression](pictures/Impression.jpg) | ![Impression1](pictures/Impression1.jpg) |
 | Impressions | Impressions |
-| ![End of the 125 mm sewer](pictures/EndOf125mm.jpg) |  |
-| End of the 125 mm sewer after 6 m |  |
+| ![End of the 125 mm sewer](pictures/EndOf125mm.jpg) | ![End of the WiFi range outside](pictures/2_6m_Outside.jpg) |
+| End of the 125 mm sewer after 6 m | End of the WiFi range outside after 2.6 m |
 
 # Revision History
 ### Version 1.0.0
