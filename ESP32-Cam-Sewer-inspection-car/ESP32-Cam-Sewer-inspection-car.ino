@@ -56,7 +56,7 @@
 #include <WiFi.h>
 #include <DNSServer.h>
 #include <ArduinoOTA.h>
-#include "src/parsebytes.h"
+#include "parsebytes.h"
 #include "time.h"
 #if ESP_ARDUINO_VERSION >= 0x030000 // ESP_ARDUINO_VERSION_VAL(3, 0, 0), ESP_ARDUINO_VERSION_VAL disturbs the auto formatting :-(
 #include "esp_private/periph_ctrl.h"
@@ -92,7 +92,7 @@ struct station {
 
 // Internal filesystem (SPIFFS)
 // used for non-volatile camera settings
-#include "src/storage.h"
+#include "storage.h"
 
 // Sketch Info
 int sketchSize;

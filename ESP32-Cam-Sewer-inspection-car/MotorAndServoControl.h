@@ -1,7 +1,7 @@
 /*
  * MotorAndServoControl.h
  *
- *  Copyright (C) 2021  Armin Joachimsmeyer
+ *  Copyright (C) 2021-2024  Armin Joachimsmeyer
  *  armin.joachimsmeyer@gmail.com
  *
  *  This file is part of ServoEasing https://github.com/ArminJo/ServoEasing.
@@ -24,7 +24,7 @@
 #ifndef MOTOR_AND_SERVO_CONTROL_HPP
 #define MOTOR_AND_SERVO_CONTROL_HPP
 
-#include "lib/PWMDcMotor/PWMDcMotor.h"
+#include "PWMDcMotor.h"
 extern PWMDcMotor DCMotor;
 
 void updateMotor();

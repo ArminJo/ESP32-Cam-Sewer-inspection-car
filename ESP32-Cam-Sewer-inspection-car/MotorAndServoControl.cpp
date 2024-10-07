@@ -38,7 +38,7 @@
 #define MOSFET_BRIDGE_USED  // Activate this, if you use a (recommended) mosfet bridge instead of a L298 bridge, which has higher losses.
 //#define DEFAULT_DRIVE_MILLIVOLT       2000 // Drive voltage -motors default speed- is 2.0 volt
 //#define DO_NOT_SUPPORT_RAMP  // Ramps are anyway not used if drive speed voltage (default 2.0 V) is below 2.3 V. Saves 378 bytes program space.
-#include "lib/PWMDcMotor/PWMDcMotor.hpp" // include the sources of the PWMDcMotor library
+#include "PWMDcMotor.hpp" // include the sources of the PWMDcMotor library
 
 #include "MotorAndServoControl.h"
 

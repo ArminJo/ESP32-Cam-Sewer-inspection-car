@@ -1,6 +1,11 @@
+<div align = center>
 # [ESP32-Cam Sewer inspection car](https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car)
 
-### [Version 1.0.0](https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car/archive/master.zip) - work in progress
+A simple and small robot car using the well known yellow gear motors and wheels.
+It carries an ESP32-Cam monted on a pan servo.
+I used it to inspect my sewer pipes under the basement and up to the curb.
+
+Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver/tree/master/src) by Owen Carter.
 
 [![Badge License: GPLv3](https://img.shields.io/badge/License-GPLv3-brightgreen.svg)](https://www.gnu.org/licenses/gpl-3.0)
  &nbsp; &nbsp;
@@ -14,12 +19,11 @@
 <br/>
 <br/>
 [![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+</div>
 
-A simple and small robot car using the well known yellow gear motors and wheels.
-It carries an ESP32-Cam monted on a pan servo.
-I used it to inspect my sewer pipes under the basement and up to the curb.
+#### If you find this library useful, please give it a star.
 
-Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver/tree/master/src) by Owen Carter.
+&#x1F30E; [Google Translate](https://translate.google.com/translate?sl=en&u=https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car)
 
 #### YouTube video of inspection car in action
 
@@ -65,6 +69,7 @@ Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver
 
 # Revision History
 ### Version 1.0.0
-- Initial version.
+- ESP32 core 3.x support.
 
-#### If you find this sketch useful, please give it a star.
+### Version 0.9.0
+- Initial version.

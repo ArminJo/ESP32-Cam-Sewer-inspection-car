@@ -28,9 +28,9 @@
 #include "index_ov3660.h"
 #include "index_other.h"
 #include "css.h"
-#include "src/favicons.h"
-#include "src/logo.h"
-#include "src/storage.h"
+#include "favicons.h"
+#include "logo.h"
+#include "storage.h"
 
 #include "esp32-cam-webserver.h"
 #include "MotorAndServoControl.h"
