@@ -1,0 +1,33 @@
+# TestCompile.yml
+# Github workflow script to test compile all examples of an Arduino library repository.
+#
+# Copyright (C) 2021-2024  Armin Joachimsmeyer
+# https://github.com/ArminJo/Github-Actions
+#
+
+# This is the name of the workflow, visible on GitHub UI.
+name: TestCompile
+on:
+  workflow_dispatch: # To run it manually
+    description: 'manual build check'
+  push: # see: https://help.github.com/en/actions/reference/events-that-trigger-workflows#pull-request-event-pull_request
+    paths:
+      - '**.ino'
+      - '**.cpp'
+      - '**.h'
+      - '**TestCompile.yml'
+
+jobs:
+  build:
+    name: Test compiling examples for ESP32
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@master
+
+      - name: Compile all examples
+        uses: ArminJo/arduino-test-compile@master
+        with:
+          arduino-board-fqbn: esp32:esp32:esp32cam
+          platform-url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
+#          debug-install: true

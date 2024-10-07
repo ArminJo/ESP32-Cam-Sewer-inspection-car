@@ -17,8 +17,8 @@
  *
  *  This program is distributed in the hope that it will be useful,
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
- *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- *  GNU General Public License for more details.
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See the GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
  *  along with this program.  If not, see <http://www.gnu.org/licenses/gpl.html>.
@@ -70,13 +70,25 @@ unsigned long sMillisOfLastAction;
 //#define TILT_SERVO_CHANNEL  LEDC_CHANNEL_3
 //#define TILT_SERVO_PIN      2
 
+#if !defined(ESP_ARDUINO_VERSION)
+#define ESP_ARDUINO_VERSION 0
+#endif
+#if !defined(ESP_ARDUINO_VERSION_VAL)
+#define ESP_ARDUINO_VERSION_VAL(major, minor, patch) 202
+#endif
+
 void initAnalogWrite() {
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    analogWriteResolution(DC_MOTOR_SPEED_PIN, 8); // 3.x API
+    analogWriteFrequency(DC_MOTOR_SPEED_PIN, 500); // 3.x API
+#else
     ledcSetup(DC_MOTOR_SPEED_CHANNEL, 500, 8); //channel, 500 Hz, 8 bit resolution (for 2 ms)
     ledcAttachPin(DC_MOTOR_SPEED_PIN, DC_MOTOR_SPEED_CHANNEL); // pin, channel
+#endif
 }
 
 void analogWrite(int8_t pin, int aSpeed) {
-    ledcWrite(DC_MOTOR_SPEED_CHANNEL, aSpeed);
+    ledcWrite(DC_MOTOR_SPEED_PIN, aSpeed);
     sMillisOfLastAction = millis();
 }
 
@@ -106,8 +118,12 @@ void initServoAndMotorPinsAndChannels(bool aIsAccesspoint) {
     /*
      * Servo
      */
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    ledcAttach(PAN_SERVO_PIN, 50, 16); // New API
+#else
     ledcSetup(PAN_SERVO_CHANNEL, 50, 16); //channel, 50 Hz, 16 bit resolution (for 20 ms)
     ledcAttachPin(PAN_SERVO_PIN, PAN_SERVO_CHANNEL); // pin, channel
+#endif
     ledcServoWrite(PAN_SERVO_CHANNEL, ServoPanDegree);
     //    ledcSetup(TILT_SERVO_CHANNEL, 50, 16);
     //    ledcAttachPin(TILT_SERVO_PIN, TILT_SERVO_CHANNEL);

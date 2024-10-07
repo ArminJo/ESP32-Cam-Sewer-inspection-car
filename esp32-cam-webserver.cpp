@@ -1,29 +1,42 @@
-#include <esp_camera.h>
-#include <esp_int_wdt.h>
-#include <esp_task_wdt.h>
-#include <WiFi.h>
-#include <DNSServer.h>
-#include <ArduinoOTA.h>
-#include "src/parsebytes.h"
-#include "time.h"
-
-#include "MotorAndServoControl.h"
-
-/* This sketch is a extension/expansion/reork of the 'official' ESP32 Camera example
- *  sketch from Expressif:
+/*
+ * esp32-cam-webserver.cpp
+ *
+ * This sketch is based on esp32-cam-webserver by Owen Carter.
+ * This in turn is based on the 'official' ESP32 Camera example sketch from Expressif:
  *  https://github.com/espressif/arduino-esp32/tree/master/libraries/ESP32/examples/Camera/CameraWebServer
  *
- *  It is modified to allow control of Illumination LED Lamps's (present on some modules),
- *  greater feedback via a status LED, and the HTML contents are present in plain text
- *  for easy modification.
+ *  Extensions by me:
+ *  - Pan servo for the ESP32-Cam.
+ *  - Go fixed distances.
+ *  - Adjustable speed / power.
  *
- *  A camera name can now be configured, and wifi details can be stored in an optional 
- *  header file to allow easier updated of the repo.
+ *  Features of Owen Carters version
  *
- *  The web UI has had changes to add the lamp control, rotation, a standalone viewer,
- *  more feeedback, new controls and other tweaks and changes,
- * note: Make sure that you have either selected ESP32 AI Thinker,
- *       or another board which has PSRAM enabled to use high resolution camera modes
+ *  - More options for default network and camera settings
+ *  - Save and restore settings
+ *  - Control of on-board lamps, rotate the view in the browser
+ *  - Dedicated standalone stream viewer
+ *  - Over The Air firmware updates
+ *  - Lots of minor fixes and tweaks, documentation etc.
+ *  - And 'reduced' by removing the Face Recognition features
+ *
+ *  Copyright (C) 2021-2022  Armin Joachimsmeyer
+ *  armin.joachimsmeyer@gmail.com
+ *
+ *  This file is available at https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car.
+ *
+ *  ESP32-Cam-Sewer-inspection-car is free software: you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation, either version 3 of the License, or
+ *  (at your option) any later version.
+ *
+ *  This program is distributed in the hope that it will be useful,
+ *  but WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+ *  See the GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program.  If not, see <http://www.gnu.org/licenses/gpl.html>.
  */
 
 /* 
@@ -33,6 +46,25 @@
  * an accesspoint called "ESP32-CAM-CONNECT" (password: "InsecurePassword")
  *
  */
+
+#include <Arduino.h>
+
+#include "esp32-cam-webserver.h"
+
+#include <esp_camera.h>
+#include <esp_task_wdt.h>
+#include <WiFi.h>
+#include <DNSServer.h>
+#include <ArduinoOTA.h>
+#include "src/parsebytes.h"
+#include "time.h"
+#if ESP_ARDUINO_VERSION >= 0x030000 // ESP_ARDUINO_VERSION_VAL(3, 0, 0), ESP_ARDUINO_VERSION_VAL disturbs the auto formatting :-(
+#include "esp_private/periph_ctrl.h"
+#endif
+
+#include "MotorAndServoControl.h"
+
+#define VERSION_EXAMPLE 1.0
 
 // Primary config, or defaults.
 #if __has_include("myconfig.h")
@@ -54,9 +86,6 @@ struct station {
 } stationList[] = { { "ESP32-CAM-CONNECT", "InsecurePassword", true } };
 
 #endif
-
-// Upstream version string
-#include "src/version.h"
 
 // Pin Mappings
 #include "camera_pins.h"
@@ -85,10 +114,13 @@ extern void serialDump();
 
 // A Name for the Camera. (set in myconfig.h)
 #if defined(CAM_NAME)
-char myName[] = CAM_NAME;
+const char sApplicationName[] = CAM_NAME;
 #else
-char myName[] = "ESP32 robot camera";
+const char sApplicationName[] = "ESP32 robot camera";
 #endif
+
+const char sExampleVersion[] = STR(VERSION_EXAMPLE);
+const char sCompileTimestamp[] = __DATE__ " " __TIME__; // for serialDump() etc.
 
 // Ports for http and stream (override in myconfig.h)
 #if defined(HTTP_PORT)
@@ -138,9 +170,6 @@ char streamURL[64] = { "Undefined" };
 int8_t streamCount = 0;          // Number of currently active streams
 unsigned long streamsServed = 0; // Total completed streams
 unsigned long imagesServed = 0;  // Total image requests
-
-// This will be displayed to identify the firmware
-char myVer[] PROGMEM = __DATE__ " @ " __TIME__;
 
 // Camera module bus communications frequency.
 // Originally: config.xclk_freq_hz = 20000000, but this lead to visual artifacts on many modules.
@@ -492,18 +521,26 @@ void WifiSetup() {
     }
 }
 void setup() {
+#if defined(LED_PIN)  // If we have a notification LED, set it to output
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LED_ON);
+#endif
+#if defined(LAMP_PIN)
+    // let LED flash
+    pinMode(LAMP_PIN, OUTPUT);
+    digitalWrite(LAMP_PIN, HIGH);
+#endif
+
     // This might reduce boot loops caused by camera init failures when soft rebooting
     // See, for instance, https://esp32.com/viewtopic.php?t=3152
     Serial.begin(115200);
-    Serial.setDebugOutput(true);
-    Serial.println();
-    Serial.println("====");
-    Serial.print("esp32-cam-webserver: ");
-    Serial.println(myName);
-    Serial.print("Code Built: ");
-    Serial.println(myVer);
-    Serial.print("Base Release: ");
-    Serial.println(baseVersion);
+//    Serial.setDebugOutput(true);
+    Serial.println("START " __FILE__ "\r\nVersion " STR(VERSION_EXAMPLE) " from " __DATE__ " " __TIME__);
+
+#if defined(LAMP_PIN)
+    // end of lamp flash
+    digitalWrite(LAMP_PIN, LOW);
+#endif
 
     if (stationCount == 0) {
         Serial.println("\r\nFatal Error; Halting");
@@ -535,8 +572,13 @@ void setup() {
     config.pin_pclk = PCLK_GPIO_NUM;
     config.pin_vsync = VSYNC_GPIO_NUM;
     config.pin_href = HREF_GPIO_NUM;
+#  if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    config.pin_sccb_sda = SIOD_GPIO_NUM;
+    config.pin_sccb_scl = SIOC_GPIO_NUM;
+#else
     config.pin_sscb_sda = SIOD_GPIO_NUM;
     config.pin_sscb_scl = SIOC_GPIO_NUM;
+#endif
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
     config.xclk_freq_hz = XCLK_FREQ_HZ
@@ -574,7 +616,13 @@ void setup() {
         critERR = "<h1>Error!</h1><hr><p>Camera module failed to initialise!</p><p>Please reset (power off/on) the camera.</p>";
         critERR += "<p>We will continue to reboot once per minute since this error sometimes clears automatically.</p>";
         // Start a 60 second watchdog timer
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+        esp_task_wdt_config_t twdt_config = { .timeout_ms = 60000, .idle_core_mask = 0x03,    // Bitmask of all cores
+                .trigger_panic = true, };
+        esp_task_wdt_init(&twdt_config);  // schedule a a watchdog panic event for 3 seconds in the future
+#else
         esp_task_wdt_init(60, true);
+#endif
         esp_task_wdt_add(NULL);
     } else {
         Serial.println("Camera init succeeded");
@@ -676,14 +724,20 @@ void setup() {
 
     // Initialise and set the lamp
     if (lampVal != -1) {
-        ledcSetup(lampChannel, pwmfreq, pwmresolution);  // configure LED PWM channel
-        if (autoLamp)
-            setLamp(0);                        // set default value
-        else
-            setLamp(lampVal);
 #if defined(LAMP_PIN)
+#  if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+        ledcAttach(LAMP_PIN, pwmfreq, pwmresolution); // New API
+#  else
+        ledcSetup(lampChannel, pwmfreq, pwmresolution);  // configure LED PWM channel
         ledcAttachPin(LAMP_PIN, lampChannel);            // attach the GPIO pin to the channel
+#  endif
 #endif
+        if (autoLamp) {
+            setLamp(0);                        // set default value
+        } else {
+            setLamp(lampVal);
+        }
+
     } else {
         Serial.println("No lamp, or lamp disabled in config");
     }
@@ -700,7 +754,7 @@ void setup() {
         // Port defaults to 3232
         // ArduinoOTA.setPort(3232); 
         // Hostname defaults to esp3232-[MAC]
-        ArduinoOTA.setHostname(myName);
+        ArduinoOTA.setHostname(sApplicationName);
         // No authentication by default
         if (strlen(otaPassword) != 0) {
             ArduinoOTA.setPassword(otaPassword);

@@ -2,9 +2,9 @@
 
 #include <WiFi.h> // for IPAddress etc.
 
-extern char myName[];
-extern char myVer[];
-extern char baseVersion[];
+extern const char sApplicationName[];
+extern const char sCompileTimestamp[];
+extern const char sExampleVersion[];
 extern IPAddress ip;
 extern IPAddress net;
 extern IPAddress gw;

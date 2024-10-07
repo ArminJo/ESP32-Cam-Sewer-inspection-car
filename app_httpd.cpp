@@ -15,10 +15,14 @@
 #include <esp_http_server.h>
 #include <esp_timer.h>
 #include <esp_camera.h>
-#include <esp_int_wdt.h>
+
 #include <esp_task_wdt.h>
 #include <Arduino.h>
 #include <WiFi.h>
+
+#if ESP_ARDUINO_VERSION >= 0x030000 // ESP_ARDUINO_VERSION_VAL(3, 0, 0), ESP_ARDUINO_VERSION_VAL disturbs the auto formatting :-(
+#include "esp_private/periph_ctrl.h"
+#endif
 
 #include "index_ov2640.h"
 #include "index_ov3660.h"
@@ -55,12 +59,12 @@ uint8_t temprature_sens_read();
 void serialDump() {
     Serial.println();
     // Module
-    Serial.printf("Name: %s\r\n", myName);
+    Serial.printf("Name: %s\r\n", sApplicationName);
     if (haveTime) {
         Serial.print("Time: ");
         printLocalTime(true);
     }
-    Serial.printf("Firmware: %s (base: %s)\r\n", myVer, baseVersion);
+    Serial.printf("Firmware: %s (base: %s)\r\n", sCompileTimestamp, sExampleVersion);
     float sketchPct = 100 * sketchSize / sketchSpace;
     Serial.printf("Sketch Size: %i (total: %i, %.1f%% used)\r\n", sketchSize, sketchSpace, sketchPct);
     Serial.printf("MD5: %s\r\n", sketchMD5.c_str());
@@ -109,12 +113,12 @@ void serialDump() {
     int McuTf = temprature_sens_read(); // fahrenheit
     Serial.printf("System up: %" PRId64 ":%02i:%02i:%02i (d:h:m:s)\r\n", upDays, upHours, upMin, upSec);
     Serial.printf("Active streams: %i, Previous streams: %lu, Images captured: %lu\r\n", streamCount, streamsServed, imagesServed);
-    Serial.printf("Freq: %i MHz\r\n", ESP.getCpuFreqMHz());
+    Serial.printf("Freq: %li MHz\r\n", ESP.getCpuFreqMHz());
     Serial.printf("MCU temperature : %i C, %i F  (approximate)\r\n", McuTc, McuTf);
-    Serial.printf("Heap: %i, free: %i, min free: %i, max block: %i\r\n", ESP.getHeapSize(), ESP.getFreeHeap(), ESP.getMinFreeHeap(),
-            ESP.getMaxAllocHeap());
+    Serial.printf("Heap: %li, free: %li, min free: %li, max block: %li\r\n", ESP.getHeapSize(), ESP.getFreeHeap(),
+            ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
     if (psramFound()) {
-        Serial.printf("Psram: %i, free: %i, min free: %i, max block: %i\r\n", ESP.getPsramSize(), ESP.getFreePsram(),
+        Serial.printf("Psram: %li, free: %li, min free: %li, max block: %li\r\n", ESP.getPsramSize(), ESP.getFreePsram(),
                 ESP.getMinFreePsram(), ESP.getMaxAllocPsram());
     } else {
         Serial.printf("Psram: Not found; please check your board configuration.\r\n");
@@ -171,7 +175,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
     esp_camera_fb_return(fb);
     int64_t fr_end = esp_timer_get_time();
     if (debugData) {
-        Serial.printf("JPG: %uB %ums\r\n", (uint32_t) (fb_len), (uint32_t) ((fr_end - fr_start) / 1000));
+        Serial.printf("JPG: %luB %lums\r\n", (uint32_t) (fb_len), (uint32_t) ((fr_end - fr_start) / 1000));
     }
     imagesServed++;
     if (autoLamp && (lampVal != -1))
@@ -189,8 +193,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     Serial.println("Stream requested");
     if (autoLamp && (lampVal != -1))
         setLamp(lampVal);
-    streamCount = 1;  // at present we only have one stream handler, so values are 0 or 1..
-    flashLED(75);     // double flash of status LED
+    streamCount = 1; // at present we only have one stream handler, so values are 0 or 1..
+    flashLED(75); // double flash of status LED
     delay(75);
     flashLED(75);
 
@@ -252,7 +256,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
         ;
         frame_time /= 1000;
         if (debugData) {
-            Serial.printf("MJPG: %uB %ums (%.1ffps)\r\n", (uint32_t) (_jpg_buf_len), (uint32_t) frame_time,
+            Serial.printf("MJPG: %luB %lums (%.1ffps)\r\n", (uint32_t) (_jpg_buf_len), (uint32_t) frame_time,
                     1000.0 / (uint32_t) frame_time);
         }
     }
@@ -381,9 +385,17 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
         if (filesystem)
             removePrefs(SPIFFS);
     } else if (!strcmp(variable, "reboot")) {
+        // If the TWDT was not initialized automatically on startup, manually intialize it now
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+        esp_task_wdt_config_t twdt_config = { .timeout_ms = 3000, .idle_core_mask = 0x03,    // Bitmask of all cores
+                .trigger_panic = true, };
+        esp_task_wdt_init(&twdt_config);  // schedule a a watchdog panic event for 3 seconds in the future
+#else
         esp_task_wdt_init(3, true);  // schedule a a watchdog panic event for 3 seconds in the future
+#endif
+
         esp_task_wdt_add(NULL);
-        periph_module_disable(PERIPH_I2C0_MODULE); // try to shut I2C down properly
+        periph_module_disable(PERIPH_I2C0_MODULE);  // try to shut I2C down properly
         periph_module_disable(PERIPH_I2C1_MODULE);
         periph_module_reset(PERIPH_I2C0_MODULE);
         periph_module_reset(PERIPH_I2C1_MODULE);
@@ -443,8 +455,8 @@ static esp_err_t status_handler(httpd_req_t *req) {
     p += sprintf(p, "\"hmirror\":%u,", s->status.hmirror);
     p += sprintf(p, "\"dcw\":%u,", s->status.dcw);
     p += sprintf(p, "\"colorbar\":%u,", s->status.colorbar);
-    p += sprintf(p, "\"cam_name\":\"%s\",", myName);
-    p += sprintf(p, "\"code_ver\":\"%s\",", myVer);
+    p += sprintf(p, "\"cam_name\":\"%s\",", sApplicationName);
+    p += sprintf(p, "\"code_ver\":\"%s\",", sCompileTimestamp);
     p += sprintf(p, "\"rotate\":\"%d\",", myRotation);
     p += sprintf(p, "\"rssi\":\"%d\",", WiFi.RSSI());
     p += sprintf(p, "\"stream_url\":\"%s\"", streamURL);
@@ -459,7 +471,7 @@ static esp_err_t info_handler(httpd_req_t *req) {
     static char json_response[256];
     char *p = json_response;
     *p++ = '{';
-    p += sprintf(p, "\"cam_name\":\"%s\",", myName);
+    p += sprintf(p, "\"cam_name\":\"%s\",", sApplicationName);
     p += sprintf(p, "\"rotate\":\"%d\",", myRotation);
     p += sprintf(p, "\"stream_url\":\"%s\"", streamURL);
     *p++ = '}';
@@ -502,7 +514,7 @@ static esp_err_t dump_handler(httpd_req_t *req) {
     // Header
     d += sprintf(d, "<html><head><meta charset=\"utf-8\">\n");
     d += sprintf(d, "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n");
-    d += sprintf(d, "<title>%s - Status</title>\n", myName);
+    d += sprintf(d, "<title>%s - Status</title>\n", sApplicationName);
     d += sprintf(d, "<link rel=\"icon\" type=\"image/png\" sizes=\"32x32\" href=\"/favicon-32x32.png\">\n");
     d += sprintf(d, "<link rel=\"icon\" type=\"image/png\" sizes=\"16x16\" href=\"/favicon-16x16.png\">\n");
     d += sprintf(d, "<link rel=\"stylesheet\" type=\"text/css\" href=\"/style.css\">\n");
@@ -515,8 +527,8 @@ static esp_err_t dump_handler(httpd_req_t *req) {
     }
     d += sprintf(d, "<h1>ESP32 Cam Webserver</h1>\n");
     // Module
-    d += sprintf(d, "Name: %s<br>\n", myName);
-    d += sprintf(d, "Firmware: %s (base: %s)<br>\n", myVer, baseVersion);
+    d += sprintf(d, "Name: %s<br>\n", sApplicationName);
+    d += sprintf(d, "Firmware: %s (base: %s)<br>\n", sCompileTimestamp, sExampleVersion);
     float sketchPct = 100 * sketchSize / sketchSpace;
     d += sprintf(d, "Sketch Size: %i (total: %i, %.1f%% used)<br>\n", sketchSize, sketchSpace, sketchPct);
     d += sprintf(d, "MD5: %s<br>\n", sketchMD5.c_str());
@@ -630,7 +642,7 @@ static esp_err_t error_handler(httpd_req_t *req) {
     while ((index = s.find("<APPURL>")) != std::string::npos)
         s.replace(index, strlen("<APPURL>"), httpURL);
     while ((index = s.find("<CAMNAME>")) != std::string::npos)
-        s.replace(index, strlen("<CAMNAME>"), myName);
+        s.replace(index, strlen("<CAMNAME>"), sApplicationName);
     while ((index = s.find("<ERRORTEXT>")) != std::string::npos)
         s.replace(index, strlen("<ERRORTEXT>"), critERR.c_str());
     httpd_resp_set_type(req, "text/html");
@@ -698,7 +710,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
         while ((index = s.find("<STREAMURL>")) != std::string::npos)
             s.replace(index, strlen("<STREAMURL>"), streamURL);
         while ((index = s.find("<CAMNAME>")) != std::string::npos)
-            s.replace(index, strlen("<CAMNAME>"), myName);
+            s.replace(index, strlen("<CAMNAME>"), sApplicationName);
         httpd_resp_set_type(req, "text/html");
         httpd_resp_set_hdr(req, "Content-Encoding", "identity");
         return httpd_resp_send(req, (const char*) s.c_str(), s.length());

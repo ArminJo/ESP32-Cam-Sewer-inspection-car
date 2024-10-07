@@ -2,8 +2,18 @@
 
 ### [Version 1.0.0](https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car/archive/master.zip) - work in progress
 
-[![Build Status](https://github.com/ukw100/irmp/workflows/LibraryBuild/badge.svg)](https://github.com/ukw100/irmp/actions)
-![Hit Counter](https://visitor-badge.laobi.icu/badge?page_id=ArminJo_ESP32-Cam-Sewer-inspection-car)
+[![Badge License: GPLv3](https://img.shields.io/badge/License-GPLv3-brightgreen.svg)](https://www.gnu.org/licenses/gpl-3.0)
+ &nbsp; &nbsp;
+ [![Badge Version](https://img.shields.io/github/v/release/ArminJo/ESP32-Cam-Sewer-inspection-car?include_prereleases&color=yellow&logo=DocuSign&logoColor=white)](https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car/releases/latest)
+ &nbsp; &nbsp;
+[![Badge Commits since latest](https://img.shields.io/github/commits-since/ArminJo/ESP32-Cam-Sewer-inspection-car/latest?color=yellow)](https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car/commits/master)
+ &nbsp; &nbsp;
+[![Badge Build Status](https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car/workflows/TestCompile/badge.svg)](https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car/actions)
+ &nbsp; &nbsp;
+![Badge Hit Counter](https://visitor-badge.laobi.icu/badge?page_id=ArminJo_ESP32-Cam-Sewer-inspection-car)
+<br/>
+<br/>
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
 
 A simple and small robot car using the well known yellow gear motors and wheels.
 It carries an ESP32-Cam monted on a pan servo.
@@ -11,7 +21,7 @@ I used it to inspect my sewer pipes under the basement and up to the curb.
 
 Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver/tree/master/src) by Owen Carter.
 
-YouTube video of inspection car in action
+#### YouTube video of inspection car in action
 
 [![Inspection car in action](https://i.ytimg.com/vi/aUz2TU6FpmA/hqdefault.jpg)](https://www.youtube.com/watch?v=aUz2TU6FpmA)
 
