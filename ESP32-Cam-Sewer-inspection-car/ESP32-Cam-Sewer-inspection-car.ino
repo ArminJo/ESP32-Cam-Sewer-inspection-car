@@ -6,9 +6,12 @@
  *  https://github.com/espressif/arduino-esp32/tree/master/libraries/ESP32/examples/Camera/CameraWebServer
  *
  *  Extensions by me:
- *  - Pan servo for the ESP32-Cam.
- *  - Go fixed distances.
- *  - Adjustable speed / power.
+ *  - Support a pan servo for the ESP32-Cam.
+ *  - Support motor control with adjustable speed / power and going fixed distances.
+ *  - ESP32 core 3.x adaption.
+ *  - Support of missing PSRAM - with restricted resolution / quality.
+ *  - Display of fps stream rate in Browser.
+ *  - Improved documentation.
  *
  *  Features of Owen Carters version
  *
@@ -20,7 +23,7 @@
  *  - Lots of minor fixes and tweaks, documentation etc.
  *  - And 'reduced' by removing the Face Recognition features
  *
- *  Copyright (C) 2021-2022  Armin Joachimsmeyer
+ *  Copyright (C) 2021-2024  Armin Joachimsmeyer
  *  armin.joachimsmeyer@gmail.com
  *
  *  This file is available at https://github.com/ArminJo/ESP32-Cam-Sewer-inspection-car.
@@ -62,10 +65,41 @@
 #include "esp_private/periph_ctrl.h"
 #endif
 
+/*
+ * Enable / disable extensions
+ * Definitions are in MotorAndServoControl.hpp
+ */
+#define PAN_SERVO_SUPPORT   // on pin 12
+#if defined(PAN_SERVO_SUPPORT)
+const bool sPanServoIsSupported = true;
+#else
+const bool sPanServoIsSupported = false;
+#endif
+
+#define ONE_PWM_MOTOR_SUPPORT   // on pin 13
+#if defined(ONE_PWM_MOTOR_SUPPORT)
+const bool sOnePWMMotorIsSupported = true;
+#else
+const bool sOnePWMMotorIsSupported = false;
+#endif
+#if defined(PAN_SERVO_SUPPORT) || defined(ONE_PWM_MOTOR_SUPPORT)
+#define DO_NOT_SUPPORT_RAMP // Ramps are anyway not used if drive speed voltage (default 2.0 V) is below 2.3 V. Saves 378 bytes program memory.
 #include "MotorAndServoControl.h"
+#else
+/*
+ * Helper macro for getting a macro definition as string
+ */
+#  if !defined(STR_HELPER)
+#define STR_HELPER(x) #x
+#define STR(x) STR_HELPER(x)
+#  endif
+#endif
 
 #define VERSION_EXAMPLE 1.0
 
+/*
+ * Include myconfig.h if available, otherwise we set defaults below
+ */
 // Primary config, or defaults.
 #if __has_include("myconfig.h")
 struct station {
@@ -90,6 +124,103 @@ struct station {
 // Pin Mappings
 #include "camera_pins.h"
 
+int sNumberOfFramebuffer = 2; // use 2 framebuffers if PSRAM is available, more than 2 does not increase the fps
+/*
+ * Configuration also contained in myconfig.h
+ */
+//#define LED_DISABLE       // Uncomment to disable the notification LED on the module
+//#define LAMP_DISABLE      // Uncomment to disable the illumination lamp features
+//#define LAMP_DEFAULT 0    // Define the startup lamp power setting (as a percentage, defaults to 0%)
+//#define DEFAULT_INDEX_FULL // Default Page: uncomment to make the full control page the default, otherwise show simple viewer
+//#define WIFI_AP_ENABLE    // Uncomment to enable AP mode
+//#define AP_ADDRESS 192,168,4,2 // Change the AccessPoint ip address (default = 192.168.4.1)
+//#define NO_OTA
+//#define OTA_PASSWORD "SuperVisor"
+//#define CAM_ROTATION 0 // one of 0, 90, -90
+//#define CAM_NAME "ESP32-CAM-Robot-Car" // The camera name for the web interface
+// Illumination LAMP and status LED
+#if defined(LAMP_DISABLE)
+int lampBrightnessPercentage = -1;  // lamp is disabled in config
+#elif defined(LAMP_PIN)
+#  if defined(LAMP_DEFAULT)
+int lampBrightnessPercentage = constrain(LAMP_DEFAULT,0,100); // initial lamp value, range 0-100
+#  else
+int lampBrightnessPercentage = 0;   //default to off
+#  endif
+#else
+int lampBrightnessPercentage = -1;  // no lamp pin assigned
+#endif
+
+bool autoLampValue = false;         // Start value of Auto Lamp Switch on GUI (auto on while camera running)
+
+#if defined(LED_DISABLE)
+#undef LED_PIN    // undefining this disables the notification LED
+#endif
+
+#if defined(CAM_NAME)
+const char sApplicationName[] = CAM_NAME;
+#else
+const char sApplicationName[] = "ESP32 robot camera";
+#endif
+// initial rotation
+// can be set in myconfig.h
+#if !defined(CAM_ROTATION)
+#define CAM_ROTATION 0
+#endif
+int myRotation = CAM_ROTATION;
+
+/*
+ * Setting values and defaults for defines included in myconfig.h
+ */
+// Ports for http and stream (override in myconfig.h)
+#if defined(HTTP_PORT)
+int httpPort = HTTP_PORT;
+#else
+int httpPort = 80;
+#endif
+#if defined(STREAM_PORT)
+int streamPort = STREAM_PORT;
+#else
+int streamPort = 81;
+#endif
+#if !defined(WIFI_WATCHDOG)
+#define WIFI_WATCHDOG 8000
+#endif
+
+// Select between full and simple index as the default.
+#if defined(DEFAULT_INDEX_FULL)
+char default_index[] = "full";
+#else
+char default_index[] = "simple";
+#endif
+
+#if defined(NO_FS)
+bool filesystem = false;
+#else
+bool filesystem = true;
+#endif
+#if defined(NO_OTA)
+bool otaEnabled = false;
+#else
+bool otaEnabled = true;
+#endif
+#if defined(OTA_PASSWORD)
+char otaPassword[] = OTA_PASSWORD;
+#else
+char otaPassword[] = "";
+#endif
+#if defined(NTPSERVER)
+bool haveTime = true;
+const char* ntpServer = NTPSERVER;
+const long  gmtOffset_sec = NTP_GMT_OFFSET;
+const int   daylightOffset_sec = NTP_DST_OFFSET;
+#else
+bool haveTime = false;
+const char *ntpServer = "";
+const long gmtOffset_sec = 0;
+const int daylightOffset_sec = 0;
+#endif
+
 // Internal filesystem (SPIFFS)
 // used for non-volatile camera settings
 #include "storage.h"
@@ -99,9 +230,18 @@ int sketchSize;
 int sketchSpace;
 String sketchMD5;
 
+// Number of known networks in stationList[] which is defined in myconfig.h
+int stationCount = sizeof(stationList) / sizeof(stationList[0]);
+
 // Start with accesspoint mode disabled, wifi setup will activate it if
 // no known networks are found, and WIFI_AP_ENABLE has been defined
-bool accesspoint = false;
+bool sInAccesspointMode = false;
+// If we have AP mode enabled, ignore first entry in the stationList[]
+#if defined(WIFI_AP_ENABLE) // 4 simultaneous connections in AP mode
+int firstStation = 1;
+#else
+int firstStation = 0;
+#endif
 
 // IP address, Netmask and Gateway, populated when connected
 IPAddress ip;
@@ -112,54 +252,13 @@ IPAddress gw;
 extern void startCameraServer(int hPort, int sPort);
 extern void serialDump();
 
-// A Name for the Camera. (set in myconfig.h)
-#if defined(CAM_NAME)
-const char sApplicationName[] = CAM_NAME;
-#else
-const char sApplicationName[] = "ESP32 robot camera";
-#endif
-
 const char sExampleVersion[] = STR(VERSION_EXAMPLE);
 const char sCompileTimestamp[] = __DATE__ " " __TIME__; // for serialDump() etc.
-
-// Ports for http and stream (override in myconfig.h)
-#if defined(HTTP_PORT)
-    int httpPort = HTTP_PORT;
-#else
-int httpPort = 80;
-#endif
-
-#if defined(STREAM_PORT)
-    int streamPort = STREAM_PORT;
-#else
-int streamPort = 81;
-#endif
-
-#if !defined(WIFI_WATCHDOG)
-#define WIFI_WATCHDOG 8000
-#endif
-
-// Number of known networks in stationList[]
-int stationCount = sizeof(stationList) / sizeof(stationList[0]);
-
-// If we have AP mode enabled, ignore first entry in the stationList[]
-#if defined(WIFI_AP_ENABLE)
-int firstStation = 1;
-#else
-    int firstStation = 0;
-#endif
-
-// Select between full and simple index as the default.
-#if defined(DEFAULT_INDEX_FULL)
-char default_index[] = "full";
-#else
-char default_index[] = "simple";
-#endif
 
 // DNS server
 const byte DNS_PORT = 53;
 DNSServer dnsServer;
-bool captivePortal = false;
+bool sCaptivePortalEnabled = false; // 4 simultaneous connections in AP mode
 char apName[64] = "Undefined";
 
 // The app and stream URLs
@@ -175,69 +274,13 @@ unsigned long imagesServed = 0;  // Total image requests
 // Originally: config.xclk_freq_hz = 20000000, but this lead to visual artifacts on many modules.
 // See https://github.com/espressif/esp32-camera/issues/150#issuecomment-726473652 et al.
 #if !defined (XCLK_FREQ_HZ)
-#define XCLK_FREQ_HZ 16500000;
+#define XCLK_FREQ_HZ 16500000
 #endif
 
-// initial rotation
-// can be set in myconfig.h
-#if !defined(CAM_ROTATION)
-#define CAM_ROTATION 0
-#endif
-int myRotation = CAM_ROTATION;
-
-// Illumination LAMP and status LED
-#if defined(LAMP_DISABLE)
-    int lampVal = -1; // lamp is disabled in config
-#elif defined(LAMP_PIN)
-#if defined(LAMP_DEFAULT)
-        int lampVal = constrain(LAMP_DEFAULT,0,100); // initial lamp value, range 0-100
-    #else
-int lampVal = 0; //default to off
-#endif
-#else 
-    int lampVal = -1; // no lamp pin assigned
-#endif
-
-#if defined(LED_DISABLE)
-    #undef LED_PIN    // undefining this disables the notification LED
-#endif
-
-bool autoLamp = false;         // Automatic lamp (auto on while camera running)
-
-int lampChannel = 7;           // a free PWM channel (some channels used by camera)
-const int pwmfreq = 50000;     // 50K pwm frequency
-const int pwmresolution = 9;   // duty cycle bit range
-const int pwmMax = pow(2, pwmresolution) - 1;
-
-#if defined(NO_FS)
-    bool filesystem = false;
-#else
-bool filesystem = true;
-#endif
-
-#if defined(NO_OTA)
-    bool otaEnabled = false;
-#else
-bool otaEnabled = true;
-#endif
-
-#if defined(OTA_PASSWORD)
-    char otaPassword[] = OTA_PASSWORD;
-#else
-char otaPassword[] = "";
-#endif
-
-#if defined(NTPSERVER)
-    bool haveTime = true;
-    const char* ntpServer = NTPSERVER;
-    const long  gmtOffset_sec = NTP_GMT_OFFSET;
-    const int   daylightOffset_sec = NTP_DST_OFFSET;
-#else
-bool haveTime = false;
-const char *ntpServer = "";
-const long gmtOffset_sec = 0;
-const int daylightOffset_sec = 0;
-#endif
+const int lampChannel = 2; // a free PWM channel (channel 0 used by Servo, channel 4 used by PWMMotor and maybe some channels used by camera)
+const int lampPWMFrequency = 1000;  // 1K pwm frequency
+const int lampPWMResolution = 9;    // duty cycle bit range for lamp
+const int lampPWMMax = pow(2, lampPWMResolution) - 1;
 
 // Critical error string; if set during init (camera hardware failure) it
 // will be returned for all http requests
@@ -275,7 +318,7 @@ void handleSerial() {
 
 // Notification LED 
 void flashLED(int flashtime) {
-#ifdef LED_PIN                    // If we have it; flash it.
+#if defined(LED_PIN )               // If we have it; flash it.
     digitalWrite(LED_PIN, LED_ON);  // On at full power.
     delay(flashtime);               // delay
     digitalWrite(LED_PIN, LED_OFF); // turn Off
@@ -285,16 +328,28 @@ void flashLED(int flashtime) {
 }
 
 // Lamp Control
-void setLamp(int newVal) {
-    if (newVal != -1) {
+void setLamp(int aNewPercent) {
+#if defined(LAMP_PIN)
+    if (aNewPercent != -1) {
         // Apply a logarithmic function to the scale.
-        int brightness = round((pow(2, (1 + (newVal * 0.02))) - 2) / 6 * pwmMax);
+        int brightness = pow(aNewPercent / 100.0, 2.6) * lampPWMMax + 0.5; // 2.6 is gamma - can be also 3.3...
+//        Serial.print("newVal / 100.0 = ");
+//        Serial.print(aNewPercent / 100.0);
+//        Serial.print(" pow=");
+//        Serial.print(pow(aNewPercent / 100.0, 2.6));
+//        Serial.print(" pwmMax=");
+//        Serial.println(lampPWMMax);
+#  if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+        ledcWrite(LAMP_PIN, brightness);
+#  else
         ledcWrite(lampChannel, brightness);
+#  endif
         Serial.print("Lamp: ");
-        Serial.print(newVal);
+        Serial.print(aNewPercent);
         Serial.print("%, pwm = ");
         Serial.println(brightness);
     }
+#endif
 }
 
 void printLocalTime(bool extraData = false) {
@@ -312,13 +367,13 @@ void printLocalTime(bool extraData = false) {
 void calcURLs() {
     // Set the URL's
 #if defined(URL_HOSTNAME)
-        if (httpPort != 80) {
-            sprintf(httpURL, "http://%s:%d/", URL_HOSTNAME, httpPort);
-        } else {
-            sprintf(httpURL, "http://%s/", URL_HOSTNAME);
-        }
-        sprintf(streamURL, "http://%s:%d/", URL_HOSTNAME, streamPort);
-    #else
+    if (httpPort != 80) {
+        sprintf(httpURL, "http://%s:%d/", URL_HOSTNAME, httpPort);
+    } else {
+        sprintf(httpURL, "http://%s/", URL_HOSTNAME);
+    }
+    sprintf(streamURL, "http://%s:%d/", URL_HOSTNAME, streamPort);
+#else
     Serial.println("Setting httpURL");
     if (httpPort != 80) {
         sprintf(httpURL, "http://%d.%d.%d.%d:%d/", ip[0], ip[1], ip[2], ip[3], httpPort);
@@ -388,17 +443,17 @@ void WifiSetup() {
         }
     } else {
         // No list to scan, therefore we are an accesspoint
-        accesspoint = true;
+        sInAccesspointMode = true;
     }
 
     if (bestStation == -1) {
-        if (!accesspoint) {
+        if (!sInAccesspointMode) {
 #if defined(WIFI_AP_ENABLE)
             Serial.println("No known networks found, entering AccessPoint fallback mode");
-            accesspoint = true;
+            sInAccesspointMode = true;
 #else
-                Serial.println("No known networks found");
-            #endif
+            Serial.println("No known networks found");
+#endif
         } else {
             Serial.println("AccessPoint mode selected in config");
         }
@@ -408,32 +463,32 @@ void WifiSetup() {
         // Apply static settings if necessary
         if (stationList[bestStation].dhcp == false) {
 #if defined(ST_IP)
-                Serial.println("Applying static IP settings");
-                #if !defined (ST_GATEWAY)  || !defined (ST_NETMASK) 
-                    #error "You must supply both Gateway and NetMask when specifying a static IP address"
-                #endif
-                IPAddress staticIP(ST_IP);
-                IPAddress gateway(ST_GATEWAY);
-                IPAddress subnet(ST_NETMASK);
-                #if !defined(ST_DNS1)
-                    WiFi.config(staticIP, gateway, subnet);
-                #else
-                    IPAddress dns1(ST_DNS1);
-                #if !defined(ST_DNS2)
-                    WiFi.config(staticIP, gateway, subnet, dns1);
-                #else
-                    IPAddress dns2(ST_DNS2);
-                    WiFi.config(staticIP, gateway, subnet, dns1, dns2);
-                #endif
-                #endif
-            #else
+            Serial.println("Applying static IP settings");
+#  if !defined (ST_GATEWAY)  || !defined (ST_NETMASK)
+#  error "You must supply both Gateway and NetMask when specifying a static IP address"
+#  endif
+            IPAddress staticIP(ST_IP);
+            IPAddress gateway(ST_GATEWAY);
+            IPAddress subnet(ST_NETMASK);
+#  if !defined(ST_DNS1)
+            WiFi.config(staticIP, gateway, subnet);
+#  else
+            IPAddress dns1(ST_DNS1);
+#    if !defined(ST_DNS2)
+            WiFi.config(staticIP, gateway, subnet, dns1);
+#    else
+            IPAddress dns2(ST_DNS2);
+            WiFi.config(staticIP, gateway, subnet, dns1, dns2);
+#    endif
+#  endif
+#else
             Serial.println("Static IP settings requested but not defined in config, falling back to dhcp");
-#endif
+#endif // defined(ST_IP)
         }
 
 #if defined(HOSTNAME)
-            WiFi.setHostname(HOSTNAME);
-        #endif
+        WiFi.setHostname(HOSTNAME);
+#endif
 
         // Initiate network connection request (3rd argument, channel = 0 is 'auto')
         WiFi.begin(bestSSID, stationList[bestStation].password, 0, bestBSSID);
@@ -447,7 +502,7 @@ void WifiSetup() {
         // If we have connected, inform user
         if (WiFi.status() == WL_CONNECTED) {
             Serial.println("Client connection succeeded");
-            accesspoint = false;
+            sInAccesspointMode = false;
             // Note IP details
             ip = WiFi.localIP();
             net = WiFi.subnetMask();
@@ -456,10 +511,10 @@ void WifiSetup() {
             Serial.printf("Netmask   : %d.%d.%d.%d\r\n", net[0], net[1], net[2], net[3]);
             Serial.printf("Gateway   : %d.%d.%d.%d\r\n", gw[0], gw[1], gw[2], gw[3]);
             calcURLs();
-            // Flash the LED to show we are connected
-            for (int i = 0; i < 5; i++) {
+            // Flash the LED 4 times to show we are connected
+            for (int i = 0; i < 4; i++) {
                 flashLED(50);
-                delay(150);
+                delay(250);
             }
         } else {
             Serial.println("Client connection Failed");
@@ -467,18 +522,18 @@ void WifiSetup() {
         }
     }
 
-    if (accesspoint && (WiFi.status() != WL_CONNECTED)) {
+    if (sInAccesspointMode && (WiFi.status() != WL_CONNECTED)) {
         // The accesspoint has been enabled, and we have not connected to any existing networks
 #if defined(AP_CHAN)
-            Serial.println("Setting up Fixed Channel AccessPoint");
-            Serial.print("  SSID     : ");
-            Serial.println(stationList[0].ssid);
-            Serial.print("  Password : ");
-            Serial.println(stationList[0].password);
-            Serial.print("  Channel  : ");
-            Serial.println(AP_CHAN);
-            WiFi.softAP(stationList[0].ssid, stationList[0].password, AP_CHAN);
-        # else
+        Serial.println("Setting up Fixed Channel AccessPoint");
+        Serial.print("  SSID     : ");
+        Serial.println(stationList[0].ssid);
+        Serial.print("  Password : ");
+        Serial.println(stationList[0].password);
+        Serial.print("  Channel  : ");
+        Serial.println(AP_CHAN);
+        WiFi.softAP(stationList[0].ssid, stationList[0].password, AP_CHAN);
+#else
         Serial.println("Setting up AccessPoint");
         Serial.print("  SSID     : ");
         Serial.println(stationList[0].ssid);
@@ -491,14 +546,14 @@ void WifiSetup() {
         }
 #endif
 #if defined(AP_ADDRESS)
-            // User has specified the AP details; apply them after a short delay
-            // (https://github.com/espressif/arduino-esp32/issues/985#issuecomment-359157428)
-            delay(100);
-            IPAddress local_IP(AP_ADDRESS);
-            IPAddress gateway(AP_ADDRESS);
-            IPAddress subnet(255,255,255,0);
-            WiFi.softAPConfig(local_IP, gateway, subnet);
-        #endif
+        // User has specified the AP details; apply them after a short delay
+        // (https://github.com/espressif/arduino-esp32/issues/985#issuecomment-359157428)
+        delay(100);
+        IPAddress local_IP(AP_ADDRESS);
+        IPAddress gateway(AP_ADDRESS);
+        IPAddress subnet(255,255,255,0);
+        WiFi.softAPConfig(local_IP, gateway, subnet);
+#endif
         // Note AP details
         ip = WiFi.softAPIP();
         net = WiFi.subnetMask();
@@ -516,7 +571,7 @@ void WifiSetup() {
         if (stationList[0].dhcp == true) {
             Serial.println("Starting Captive Portal");
             dnsServer.start(DNS_PORT, "*", ip);
-            captivePortal = true;
+            sCaptivePortalEnabled = true;
         }
     }
 }
@@ -531,8 +586,6 @@ void setup() {
     digitalWrite(LAMP_PIN, HIGH);
 #endif
 
-    // This might reduce boot loops caused by camera init failures when soft rebooting
-    // See, for instance, https://esp32.com/viewtopic.php?t=3152
     Serial.begin(115200);
 //    Serial.setDebugOutput(true);
     Serial.println("START " __FILE__ "\r\nVersion " STR(VERSION_EXAMPLE) " from " __DATE__ " " __TIME__);
@@ -581,24 +634,36 @@ void setup() {
 #endif
     config.pin_pwdn = PWDN_GPIO_NUM;
     config.pin_reset = RESET_GPIO_NUM;
-    config.xclk_freq_hz = XCLK_FREQ_HZ
-    ;
+    config.xclk_freq_hz = XCLK_FREQ_HZ;
     config.pixel_format = PIXFORMAT_JPEG;
     // Pre-allocate large buffers
     if (psramFound()) {
         config.frame_size = FRAMESIZE_UXGA;
-        config.jpeg_quality = 10;
-        config.fb_count = 6; // We can be generous since we are not using facedetect anymore, allows for bigger jpeg frame size (data)
+        config.jpeg_quality = 10; //0-63 lower number means higher quality
+        /*
+         * Frame buffer count also used for stills :-(
+         */
+        config.fb_count = sNumberOfFramebuffer; // two are required to double the frame rate, more makes no sense
+        Serial.printf("PSRAM detected. Set %u framebuffer for UXGA and quality %u", config.fb_count, config.jpeg_quality);
     } else {
-        config.frame_size = FRAMESIZE_SVGA;
-        config.jpeg_quality = 12;
+        /*
+         * Maximum quality without PSRAM: SVGA: 6 (Maximum), XGA: 9, HD: 10, SXGA: 16, UXGA: 27
+         * This depends on the content of the picture, which determine its size, and thus may not fit into our buffer with these quality settings..
+         * Then try the next lower setting.
+         */
+        config.fb_location = CAMERA_FB_IN_DRAM;
+        config.frame_size = FRAMESIZE_VGA;
+        config.jpeg_quality = 6;
         config.fb_count = 1;
+        sNumberOfFramebuffer = 1;
+        Serial.printf("No PSRAM found. Set %u framebuffer for VGA and quality to %u.\r\n", config.fb_count, config.jpeg_quality);
+        Serial.printf("High resolution/quality images & streams will show incomplete frames due to low memory.\r\n");
     }
 
 #if defined(CAMERA_MODEL_ESP_EYE)
-        pinMode(13, INPUT_PULLUP);
-        pinMode(14, INPUT_PULLUP);
-    #endif
+    pinMode(13, INPUT_PULLUP);
+    pinMode(14, INPUT_PULLUP);
+#endif
 
     // camera init
     esp_err_t err = esp_camera_init(&config);
@@ -607,7 +672,7 @@ void setup() {
         Serial.printf("\r\n\r\nCRITICAL FAILURE: Camera sensor failed to initialise.\r\n\r\n");
         Serial.printf("A full (hard, power off/on) reboot will probably be needed to recover from this.\r\n");
         Serial.printf("Meanwhile; this unit will reboot in 1 minute since these errors sometime clear automatically\r\n");
-        // Reset the I2C bus.. may help when rebooting.
+        // Reset the I2C bus.. may help when rebooting. See https://esp32.com/viewtopic.php?t=3152
         periph_module_disable(PERIPH_I2C0_MODULE); // try to shut I2C down properly in case that is the problem
         periph_module_disable(PERIPH_I2C1_MODULE);
         periph_module_reset(PERIPH_I2C0_MODULE);
@@ -654,25 +719,30 @@ void setup() {
             s->set_brightness(s, 1);  //up the blightness just a bit
             s->set_saturation(s, -2);  //lower the saturation
         }
-
+#if defined(PAN_SERVO_SUPPORT)
+        if (s->id.PID == OV2640_PID) {
+            s->set_hmirror(s, 1);  //flip it top down
+            s->set_vflip(s, 1);  //flip it back
+        }
+#endif
         // M5 Stack Wide has special needs
 #if defined(CAMERA_MODEL_M5STACK_WIDE)
-            s->set_vflip(s, 1);
-            s->set_hmirror(s, 1);
-        #endif
+        s->set_vflip(s, 1);
+        s->set_hmirror(s, 1);
+#endif
 
         // Config can override mirror and flip
 #if defined(H_MIRROR)
-            s->set_hmirror(s, H_MIRROR);
-        #endif
+        s->set_hmirror(s, H_MIRROR);
+#endif
 #if defined(V_FLIP)
-            s->set_vflip(s, V_FLIP);
-        #endif
+        s->set_vflip(s, V_FLIP);
+#endif
 
         // set initial frame rate
 #if defined(DEFAULT_RESOLUTION)
-            s->set_framesize(s, DEFAULT_RESOLUTION);
-        #else
+        s->set_framesize(s, DEFAULT_RESOLUTION);
+#else
         s->set_framesize(s, FRAMESIZE_SVGA);
 #endif
 
@@ -723,19 +793,19 @@ void setup() {
      */
 
     // Initialise and set the lamp
-    if (lampVal != -1) {
+    if (lampBrightnessPercentage != -1) {
 #if defined(LAMP_PIN)
 #  if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-        ledcAttach(LAMP_PIN, pwmfreq, pwmresolution); // New API
+        ledcAttachChannel(LAMP_PIN, lampPWMFrequency, lampPWMResolution, lampChannel); // New API - 2 channels share same timer and resolution
 #  else
-        ledcSetup(lampChannel, pwmfreq, pwmresolution);  // configure LED PWM channel
+        ledcSetup(lampChannel, lampPWMFrequency, lampPWMResolution);  // configure LED PWM channel
         ledcAttachPin(LAMP_PIN, lampChannel);            // attach the GPIO pin to the channel
 #  endif
 #endif
-        if (autoLamp) {
+        if (autoLampValue) {
             setLamp(0);                        // set default value
         } else {
-            setLamp(lampVal);
+            setLamp(lampBrightnessPercentage);
         }
 
     } else {
@@ -743,7 +813,7 @@ void setup() {
     }
 
     // Having got this far; start Wifi and loop until we are connected or have started an AccessPoint
-    while ((WiFi.status() != WL_CONNECTED) && !accesspoint) {
+    while ((WiFi.status() != WL_CONNECTED) && !sInAccesspointMode) {
         WifiSetup();
         delay(1000);
     }
@@ -756,6 +826,7 @@ void setup() {
         // Hostname defaults to esp3232-[MAC]
         ArduinoOTA.setHostname(sApplicationName);
         // No authentication by default
+        ArduinoOTA.setPort(3232); // Required for Sloeber
         if (strlen(otaPassword) != 0) {
             ArduinoOTA.setPassword(otaPassword);
             Serial.printf("OTA Password: %s\n\r", otaPassword);
@@ -819,12 +890,12 @@ void setup() {
         Serial.printf("Stream viewer available at '%sview'\r\n", streamURL);
         Serial.printf("Raw stream URL is '%s'\r\n", streamURL);
 #if defined(DEBUG_DEFAULT_ON)
-            debugOn();
-        #else
+        debugOn();
+#else
         debugOff();
 #endif
     } else {
-        Serial.printf("\r\nCamera unavailable due to initialisation errors.\r\n\r\n");
+        Serial.printf("\r\nCamera unavailable due to initialization errors.\r\n\r\n");
     }
 
     // Used when dumping status; these are slow functions, so just do them once during startup
@@ -837,13 +908,7 @@ void setup() {
         Serial.read();
     }
 
-    // Warn if no PSRAM is detected (typically user error with board selection in the IDE)
-    if (!psramFound()) {
-        Serial.printf("\r\nNo PSRAM found.\r\nPlease check the board config for your module.\r\n");
-        Serial.printf("High resolution/quality images & streams will show incomplete frames due to low memory.\r\n");
-    }
-
-    initServoAndMotorPinsAndChannels(accesspoint);
+    initServoAndMotorPinsAndChannels(sInAccesspointMode);
 
     // While in Beta; Warn!
     Serial.print("\r\nThis is the 4.0 alpha\r\n - Face detection has been removed!\r\n");
@@ -855,7 +920,7 @@ void loop() {
      * The stream and URI handler processes initiated by the startCameraServer() call at the
      * end of setup() will handle the camera and UI processing from now on.
      */
-    if (accesspoint) {
+    if (sInAccesspointMode) {
         // Accespoint is permanently up, so just loop, servicing the captive portal as needed
         // Rather than loop forever, follow the watchdog, in case we later add auto re-scan.
         unsigned long start = millis();
@@ -866,7 +931,8 @@ void loop() {
             }
             handleSerial();
             updateMotor();
-            if (captivePortal) {
+            checkForAttention();
+            if (sCaptivePortalEnabled) {
                 dnsServer.processNextRequest();
             }
         }
@@ -889,9 +955,12 @@ void loop() {
                 }
                 handleSerial();
                 updateMotor();
+                checkForAttention();
             }
         } else {
-            // disconnected; attempt to reconnect
+            /*
+             * disconnected; attempt to reconnect
+             */
             if (!warned) {
                 // Tell the user if we just disconnected
                 WiFi.disconnect();  // ensures disconnect is complete, wifi scan cleared

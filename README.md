@@ -30,9 +30,11 @@ Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver
 [![Inspection car in action](https://i.ytimg.com/vi/aUz2TU6FpmA/hqdefault.jpg)](https://www.youtube.com/watch?v=aUz2TU6FpmA)
 
 # Additional Features
-- Pan servo for the ESP32-Cam.
-- Go fixed distances.
-- Adjustable speed / power.
+- Support a pan servo for the ESP32-Cam.
+- Support motor control with adjustable speed / power and going fixed distances.
+- Support of missing PSRAM - with restricted resolution / quality.
+- Display of fps stream rate in Browser.
+- Improved documentation.
 
 ### Features of Owen Carters version
 - More options for default network and camera settings
@@ -70,6 +72,9 @@ Based on [esp32-cam-webserver](https://github.com/easytarget/esp32-cam-webserver
 # Revision History
 ### Version 1.0.0
 - ESP32 core 3.x support.
+- Support for missing PSRAM.
+- Removed annoying buffering of stills.
+- Browser display of fps of running stream.
 
 ### Version 0.9.0
 - Initial version.

@@ -21,16 +21,17 @@
  *
  */
 
-#ifndef MOTOR_AND_SERVO_CONTROL_HPP
-#define MOTOR_AND_SERVO_CONTROL_HPP
+#ifndef _MOTOR_AND_SERVO_CONTROL_H
+#define _MOTOR_AND_SERVO_CONTROL_H
 
 #include "PWMDcMotor.h"
 extern PWMDcMotor DCMotor;
+extern unsigned long sMillisOfLastAction;
 
 void updateMotor();
+void checkForAttention();
 void setServoPan(int aNewDegree);
 void initServoAndMotorPinsAndChannels(bool aIsAccesspoint);
 bool ServoAndMotorCommandInterpreter(char *aCommandString, int aCommandValue);
 
-#endif //#ifndef MOTOR_AND_SERVO_CONTROL_HPP
-#pragma once
+#endif //#ifndef _MOTOR_AND_SERVO_CONTROL_H

@@ -25,11 +25,12 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
   <body>
     <section class="main">
       <div id="header-button-line" style="width:28em;">
-        <label for="nav-toggle-cb" id="nav-toggle" style="float:left;">&#9776;&nbsp;&nbsp;Settings&nbsp;&nbsp;&nbsp;&nbsp;</label>
+        <label for="nav-toggle-cb" id="nav-toggle" style="float:left;" title="Hide / show settings">&#9776;&nbsp;</label>
         <button id="swap-viewer" style="float:left;" title="Swap to simple viewer">Simple</button>
         <button id="get-still" style="float:left;">Get Still</button>
         <a id="save-still-link" href="/capture" download="capture"><button id="save-still-button" style="float:left;">Save Still</button></a>
         <button id="toggle-stream" style="float:left;" class="hidden">Start Stream</button>
+      <div id="fps" style="float:left;" class="hidden" title="FPS of started stream">0.0</div>
         <div id="wait-settings" style="float:left;" class="loader" title="Waiting for camera settings to load"></div>
       </div>
       <div id="content">
@@ -37,7 +38,7 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
           <input type="checkbox" id="nav-toggle-cb" checked="checked">
             <nav id="menu" style="width:28em;">
               <div class="input-group hidden" id="lamp-group">
-                <label for="lamp">Light</label>
+                <label id="lamp-label" for="lamp">Light</label>
                 <div class="range-min">Off</div>
                 <input type="range" id="lamp" min="0" max="100" value="42" class="default-action">
                 <div class="range-max">Full</div>
@@ -50,18 +51,18 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
                 </div>
               </div>
               <div class="input-group hidden" id="pan-group">
-                <label id="pan-label" for="pan">Pan 90&deg;</label>
+                <label id="pan-label" for="pan">Pan</label>
                 <div class="range-min">Left</div>
-                  <input type="range" id="pan" min="20" max="160" value="42" class="default-action">
+                <input type="range" id="pan" min="20" max="160" value="42" class="default-action">
                 <div class="range-max">Right</div>
               </div>
               <div class="input-group hidden" id="speed-group">
-                <label id="speed-label" for="motor-speed">Speed 50%</label>
+                <label id="speed-label" for="motor-speed">Speed</label>
                 <div class="range-min">0</div>
-                  <input type="range" id="motor-speed" min="0" max="255" value="42" class="default-action">
+                <input type="range" id="motor-speed" min="0" max="255" value="42" class="default-action">
                 <div class="range-max">100%</div>
               </div>
-            <div class="input-group" id="move-group">
+            <div class="input-group hidden" id="move-group">
               <label for="move-backward" style="line-height: 2em;">Moving</label>
               <button id="move-backward" title="Move backward" name="move-car" value="-1000">&lt;</button>
               <button id="go-backward20" title="Go back 20 cm" name="move-car" value="-20">20</button>
@@ -89,7 +90,7 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
                 </select>
               </div>
               <div class="input-group" id="quality-group">
-                <label for="quality">Quality</label>
+                <label id="quality-label" for="quality">Quality</label>
                 <div class="range-min">Low<br><span style="font-size: 80%;">(fast)</span></div>
                 <!-- Note; the following element is 'flipped' in CSS so that it slides from High to Low
                      As a result the 'min' and 'max' values are reversed here too -->
@@ -290,7 +291,6 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
         </figure>
       </div>
     </section>
-  </body>
 
   <script>
   document.addEventListener('DOMContentLoaded', function (event) {
@@ -320,6 +320,9 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
     const rebootButton = document.getElementById('reboot')
 
     const saveStillButton = document.getElementById('save-still-button')
+
+// Extensions
+    const fpsInfo = document.getElementById('fps')
     const panGroup = document.getElementById('pan-group')
     const speedGroup = document.getElementById('speed-group')
     const forwardMoveButton = document.getElementById('move-forward')
@@ -347,45 +350,34 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
       el.disabled = false
     }
 
-    const updateValue = (el, value, updateRemote) => {
-      updateRemote = updateRemote == null ? true : updateRemote
-      let initialValue
-      if (el.type === 'checkbox') {
-        initialValue = el.checked
-        value = !!value
-        el.checked = value
-      } else {
-        initialValue = el.value
-        el.value = value
+    function updateRangeLabel (el) {
+      if(el.id === "lamp"){
+        document.getElementById('lamp-label').innerHTML = "Light " + el.value + "%";
+      } else if(el.id === "pan"){
+        document.getElementById('pan-label').innerHTML = "Pan " + el.value + "&deg;";
+      } else if(el.id === "motor-speed"){
+        document.getElementById('speed-label').innerHTML = "Speed " + Math.round((el.value * 100) / 255) + "%";
+      } else if(el.id === "quality"){
+        document.getElementById('quality-label').innerHTML = "Quality " + el.value;
       }
+    }
 
-      if (updateRemote && initialValue !== value) {
-        updateConfig(el);
-      } else if(!updateRemote){
-        if(el.id === "aec"){
-          value ? hide(exposure) : show(exposure)
-        } else if(el.id === "agc"){
-          if (value) {
-            show(gainCeiling)
-            hide(agcGain)
-          } else {
-            hide(gainCeiling)
-            show(agcGain)
+  const updateValue = (el, value, updateRemote) => {
+    updateRemote = updateRemote == null ? true : updateRemote
+
+    if(!updateRemote){
+    // Change visibility of elements and set some special values
+      if(typeof value != 'undefined') {
+        if(el.id === "pan" || el.id === "motor-speed" || el.id === "lamp"){
+          el.parentElement.classList.remove('hidden') // show hidden element, if value is not undefined, i.e. sent from host
+          if(el.id === "motor-speed"){
+            show(document.getElementById('move-group')); // enable this group too if we set the speed
+            console.log('PWM Motor control enabled');
           }
-        } else if(el.id === "awb_gain"){
-          value ? show(wb) : hide(wb)
-        } else if(el.id === "lamp"){
-          if (value == -1) { 
-            hide(lampGroup)
-            hide(autolampGroup)
-            hide(panGroup)
-            hide(speedGroup)
-          } else {
-            show(lampGroup)
-            show(autolampGroup)
-            show(panGroup)
-            show(speedGroup)
-          }
+        } else if(el.id === "autolamp"){
+          show(document.getElementById('autolamp-group'));
+          console.log('Autolamp enabled');
+
         } else if(el.id === "cam_name"){
           camName.innerHTML = value;
           window.document.title = value;
@@ -394,7 +386,7 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
           codeVer.innerHTML = value;
           console.log('Firmware Build: ' + value);
         } else if(el.id === "rotate"){
-          rotate.value = value;
+          rotate.value = value; // required for applyRotation()
           applyRotation();
         } else if(el.id === "stream_url"){
           streamURL = value;
@@ -407,29 +399,61 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
           show(streamGroup)
           console.log('Stream URL set to: ' + streamURL);
           console.log('Stream Viewer URL set to: ' + viewerURL);
-        } 
+        } else if(el.id === "aec"){
+          value ? hide(exposure) : show(exposure)
+        } else if(el.id === "agc"){
+          if (value) {
+            show(gainCeiling)
+            hide(agcGain)
+          } else {
+            hide(gainCeiling)
+            show(agcGain)
+          }
+        } else if(el.id === "awb_gain"){
+          value ? show(wb) : hide(wb)
+        }
       }
     }
+
+    // Get elements initial value and then set new value
+    let initialValue
+    if (el.type === 'checkbox') {
+      initialValue = el.checked
+      value = !!value
+      el.checked = value
+    } else {
+      initialValue = el.value
+      el.value = value
+    }
+
+    // Update range labels
+    if (el.type === 'range') {
+      updateRangeLabel(el);
+    }
+
+    // send to host if value changed
+    if (updateRemote && initialValue !== value) {
+      updateConfig(el);
+    }
+  }
 
     var rangeUpdateScheduled = false
     var latestRangeConfig
 
     function updateRangeConfig (el) {
-      if(el.id === "pan"){
-        document.getElementById('pan-label').innerHTML = "Pan " + el.value + "&deg;";
-      } else if(el.id === "motor-speed"){
-        document.getElementById('speed-label').innerHTML = "Speed " + Math.round((el.value * 100) / 255) + "%";
-      }
+    updateRangeLabel(el);
+// call updateConfig() for this element after 100 ms
       latestRangeConfig = el
       if (!rangeUpdateScheduled) {
         rangeUpdateScheduled = true;
         setTimeout(function(){
           rangeUpdateScheduled = false
           updateConfig(latestRangeConfig)
-        }, 150);
+        }, 100);
       }
     }
 
+// Update values on host
     function updateConfig (el) {
       let value
       switch (el.type) {
@@ -456,6 +480,23 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
         })
     }
 
+//
+// Get json with FPS from host and show it
+//
+  function getFps(){
+    fetch(`${baseHost}/fps_info`)
+      .then(function (response) {
+        return response.json()
+      })
+      .then(function (fpsinfo) {
+        fpsInfo.innerHTML = " &nbsp; " + fpsinfo["fps"] + " fps"; // set value
+          })
+  }
+
+//
+// Start document processing
+// Get status from host and set GUI values accordingly
+//
     document
       .querySelectorAll('.close')
       .forEach(el => {
@@ -473,22 +514,25 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
         document
           .querySelectorAll('.default-action')
           .forEach(el => {
-            updateValue(el, state[el.id], false)
+            updateValue(el, state[el.id], false) // set value and show element if hidden
           })
         hide(waitSettings);
         show(settings);
         show(streamButton);
-        //startStream();
       })
 
     // Put some helpful text on the 'Still' button
     stillButton.setAttribute("title", `Capture a still image :: ${baseHost}/capture`);
+
+    var fpsIntervalHandle;
 
     const stopStream = () => {
       window.stop();
       streamButton.innerHTML = 'Start Stream';
       streamButton.setAttribute("title", `Start the stream :: ${streamURL}`);
       hide(viewContainer);
+      hide(fpsInfo);
+      clearInterval(fpsIntervalHandle);
     }
 
     const startStream = () => {
@@ -497,6 +541,8 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
       streamButton.innerHTML = 'Stop Stream';
       streamButton.setAttribute("title", `Stop the stream`);
       show(viewContainer);
+      show(fpsInfo);
+      fpsIntervalHandle = setInterval(getFps, 1000);
     }
 
     const applyRotation = () => {
@@ -677,6 +723,7 @@ const uint8_t index_ov2640_html[] = R"=====(<!doctype html>
     }
   })
   </script>
+  </body>
 </html>)=====";
 
 size_t index_ov2640_html_len = sizeof(index_ov2640_html)-1;

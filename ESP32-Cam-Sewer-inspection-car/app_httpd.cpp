@@ -1,5 +1,9 @@
 // Original Copyright 2015-2016 Espressif Systems (Shanghai) PTE LTD
 //
+// Extensions:
+//  Copyright (C) 2024  Armin Joachimsmeyer
+//  armin.joachimsmeyer@gmail.com
+//
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
 // You may obtain a copy of the License at
@@ -11,7 +15,6 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-
 #include <esp_http_server.h>
 #include <esp_timer.h>
 #include <esp_camera.h>
@@ -26,7 +29,8 @@
 
 #include "index_ov2640.h"
 #include "index_ov3660.h"
-#include "index_other.h"
+#include <index_small.h>
+#include <index_other.h>
 #include "css.h"
 #include "favicons.h"
 #include "logo.h"
@@ -56,6 +60,10 @@ uint8_t temprature_sens_read();
 }
 #endif
 
+int64_t sFirstFrameTime = 0;
+int64_t sLastFrameTime = 0;
+int sFpsFrameCount = 0;
+
 void serialDump() {
     Serial.println();
     // Module
@@ -71,16 +79,16 @@ void serialDump() {
     Serial.printf("ESP sdk: %s\r\n", ESP.getSdkVersion());
     if (otaEnabled) {
         if (strlen(otaPassword) != 0) {
-            Serial.printf("OTA: Enabled, Password: %s\n\r", otaPassword);
+            Serial.printf("OTA: Enabled, Password: %s\r\n", otaPassword);
         } else {
-            Serial.printf("OTA: Enabled, No Password! (insecure)\n\r");
+            Serial.printf("OTA: Enabled, No Password! (insecure)\r\n");
         }
     } else {
-        Serial.printf("OTA: Disabled\n\r");
+        Serial.printf("OTA: Disabled\r\n");
     }
     // Network
-    if (accesspoint) {
-        if (captivePortal) {
+    if (sInAccesspointMode) {
+        if (sCaptivePortalEnabled) {
             Serial.printf("WiFi Mode: AccessPoint with captive portal\r\n");
         } else {
             Serial.printf("WiFi Mode: AccessPoint\r\n");
@@ -95,7 +103,7 @@ void serialDump() {
         Serial.printf("WiFi BSSID: %s\r\n", bssid.c_str());
     }
     Serial.printf("WiFi IP address: %d.%d.%d.%d\r\n", ip[0], ip[1], ip[2], ip[3]);
-    if (!accesspoint) {
+    if (!sInAccesspointMode) {
         Serial.printf("WiFi Netmask: %d.%d.%d.%d\r\n", net[0], net[1], net[2], net[3]);
         Serial.printf("WiFi Gateway: %d.%d.%d.%d\r\n", gw[0], gw[1], gw[2], gw[3]);
     }
@@ -144,19 +152,32 @@ static esp_err_t capture_handler(httpd_req_t *req) {
     camera_fb_t *fb = NULL;
     esp_err_t res = ESP_OK;
 
+    sMillisOfLastAction = millis();
     Serial.println("Capture Requested");
-    if (autoLamp && (lampVal != -1))
-        setLamp(lampVal);
-    flashLED(75); // little flash of status LED
+    if (autoLampValue && (lampBrightnessPercentage != -1)) {
+        setLamp(lampBrightnessPercentage);
+    } else {
+        flashLED(75); // little flash of status LED
+    }
 
     int64_t fr_start = esp_timer_get_time();
 
     fb = esp_camera_fb_get();
+
+    /*
+     * Skip complete framebuffer
+     */
+    for (int i = 0; i < sNumberOfFramebuffer; ++i) {
+        esp_camera_fb_return(fb); // dispose the buffered image
+        fb = esp_camera_fb_get(); // get fresh image
+    }
+
     if (!fb) {
         Serial.println("CAPTURE: failed to acquire frame");
         httpd_resp_send_500(req);
-        if (autoLamp && (lampVal != -1))
+        if (autoLampValue && (lampBrightnessPercentage != -1)) {
             setLamp(0);
+        }
         return ESP_FAIL;
     }
 
@@ -178,7 +199,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
         Serial.printf("JPG: %luB %lums\r\n", (uint32_t) (fb_len), (uint32_t) ((fr_end - fr_start) / 1000));
     }
     imagesServed++;
-    if (autoLamp && (lampVal != -1))
+    if (autoLampValue && (lampBrightnessPercentage != -1))
         setLamp(0);
     return res;
 }
@@ -191,8 +212,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     char *part_buf[64];
 
     Serial.println("Stream requested");
-    if (autoLamp && (lampVal != -1))
-        setLamp(lampVal);
+    if (autoLampValue && (lampBrightnessPercentage != -1))
+        setLamp(lampBrightnessPercentage);
     streamCount = 1; // at present we only have one stream handler, so values are 0 or 1..
     flashLED(75); // double flash of status LED
     delay(75);
@@ -206,7 +227,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
     res = httpd_resp_set_type(req, _STREAM_CONTENT_TYPE);
     if (res != ESP_OK) {
         streamCount = 0;
-        if (autoLamp && (lampVal != -1))
+        if (autoLampValue && (lampBrightnessPercentage != -1))
             setLamp(0);
         Serial.println("STREAM: failed to set HTTP response type");
         return res;
@@ -224,6 +245,8 @@ static esp_err_t stream_handler(httpd_req_t *req) {
                 Serial.println("STREAM: Non-JPEG frame returned by camera module");
                 res = ESP_FAIL;
             } else {
+                sLastFrameTime = esp_timer_get_time();
+                sFpsFrameCount++;
                 _jpg_buf_len = fb->len;
                 _jpg_buf = fb->buf;
             }
@@ -239,7 +262,7 @@ static esp_err_t stream_handler(httpd_req_t *req) {
             res = httpd_resp_send_chunk(req, (const char*) _jpg_buf, _jpg_buf_len);
         }
         if (fb) {
-            esp_camera_fb_return(fb);
+            esp_camera_fb_return(fb); // release frame buffer
             fb = NULL;
             _jpg_buf = NULL;
         } else if (_jpg_buf) {
@@ -253,30 +276,38 @@ static esp_err_t stream_handler(httpd_req_t *req) {
         }
         int64_t frame_time = esp_timer_get_time() - last_frame;
         last_frame = esp_timer_get_time();
-        ;
+
         frame_time /= 1000;
         if (debugData) {
             Serial.printf("MJPG: %luB %lums (%.1ffps)\r\n", (uint32_t) (_jpg_buf_len), (uint32_t) frame_time,
                     1000.0 / (uint32_t) frame_time);
         }
+        sMillisOfLastAction = millis();
     }
 
     streamsServed++;
     streamCount = 0;
-    if (autoLamp && (lampVal != -1))
+    if (autoLampValue && (lampBrightnessPercentage != -1))
         setLamp(0);
     Serial.println("Stream ended");
     last_frame = 0;
     return res;
 }
 
+/*
+ * handles request to change a control value
+ */
 static esp_err_t cmd_handler(httpd_req_t *req) {
     char *buf;
     size_t buf_len;
-    char variable[32] = { 0, };
+    char tCommandString[32] = { 0, };
     char value[32] = { 0, };
 
+    /*
+     * Signal processing of a request
+     */
     flashLED(75);
+    sMillisOfLastAction = millis();
 
     buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
@@ -286,7 +317,7 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
             return ESP_FAIL;
         }
         if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
-            if (httpd_query_key_value(buf, "var", variable, sizeof(variable)) == ESP_OK
+            if (httpd_query_key_value(buf, "var", tCommandString, sizeof(tCommandString)) == ESP_OK
                     && httpd_query_key_value(buf, "val", value, sizeof(value)) == ESP_OK) {
             } else {
                 free(buf);
@@ -307,84 +338,84 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     int val = atoi(value);
     sensor_t *s = esp_camera_sensor_get();
     int res = 0;
-    if (!strcmp(variable, "framesize")) {
+    if (!strcmp(tCommandString, "framesize")) {
         if (s->pixformat == PIXFORMAT_JPEG)
             res = s->set_framesize(s, (framesize_t) val);
-    } else if (!strcmp(variable, "quality"))
+    } else if (!strcmp(tCommandString, "quality"))
         res = s->set_quality(s, val);
-    else if (!strcmp(variable, "contrast"))
+    else if (!strcmp(tCommandString, "contrast"))
         res = s->set_contrast(s, val);
-    else if (!strcmp(variable, "brightness"))
+    else if (!strcmp(tCommandString, "brightness"))
         res = s->set_brightness(s, val);
-    else if (!strcmp(variable, "saturation"))
+    else if (!strcmp(tCommandString, "saturation"))
         res = s->set_saturation(s, val);
-    else if (!strcmp(variable, "gainceiling"))
+    else if (!strcmp(tCommandString, "gainceiling"))
         res = s->set_gainceiling(s, (gainceiling_t) val);
-    else if (!strcmp(variable, "colorbar"))
+    else if (!strcmp(tCommandString, "colorbar"))
         res = s->set_colorbar(s, val);
-    else if (!strcmp(variable, "awb"))
+    else if (!strcmp(tCommandString, "awb"))
         res = s->set_whitebal(s, val);
-    else if (!strcmp(variable, "agc"))
+    else if (!strcmp(tCommandString, "agc"))
         res = s->set_gain_ctrl(s, val);
-    else if (!strcmp(variable, "aec"))
+    else if (!strcmp(tCommandString, "aec"))
         res = s->set_exposure_ctrl(s, val);
-    else if (!strcmp(variable, "hmirror"))
+    else if (!strcmp(tCommandString, "hmirror"))
         res = s->set_hmirror(s, val);
-    else if (!strcmp(variable, "vflip"))
+    else if (!strcmp(tCommandString, "vflip"))
         res = s->set_vflip(s, val);
-    else if (!strcmp(variable, "awb_gain"))
+    else if (!strcmp(tCommandString, "awb_gain"))
         res = s->set_awb_gain(s, val);
-    else if (!strcmp(variable, "agc_gain"))
+    else if (!strcmp(tCommandString, "agc_gain"))
         res = s->set_agc_gain(s, val);
-    else if (!strcmp(variable, "aec_value"))
+    else if (!strcmp(tCommandString, "aec_value"))
         res = s->set_aec_value(s, val);
-    else if (!strcmp(variable, "aec2"))
+    else if (!strcmp(tCommandString, "aec2"))
         res = s->set_aec2(s, val);
-    else if (!strcmp(variable, "dcw"))
+    else if (!strcmp(tCommandString, "dcw"))
         res = s->set_dcw(s, val);
-    else if (!strcmp(variable, "bpc"))
+    else if (!strcmp(tCommandString, "bpc"))
         res = s->set_bpc(s, val);
-    else if (!strcmp(variable, "wpc"))
+    else if (!strcmp(tCommandString, "wpc"))
         res = s->set_wpc(s, val);
-    else if (!strcmp(variable, "raw_gma"))
+    else if (!strcmp(tCommandString, "raw_gma"))
         res = s->set_raw_gma(s, val);
-    else if (!strcmp(variable, "lenc"))
+    else if (!strcmp(tCommandString, "lenc"))
         res = s->set_lenc(s, val);
-    else if (!strcmp(variable, "special_effect"))
+    else if (!strcmp(tCommandString, "special_effect"))
         res = s->set_special_effect(s, val);
-    else if (!strcmp(variable, "wb_mode"))
+    else if (!strcmp(tCommandString, "wb_mode"))
         res = s->set_wb_mode(s, val);
-    else if (!strcmp(variable, "ae_level"))
+    else if (!strcmp(tCommandString, "ae_level"))
         res = s->set_ae_level(s, val);
-    else if (!strcmp(variable, "rotate"))
+    else if (!strcmp(tCommandString, "rotate"))
         myRotation = val;
-    else if (!strcmp(variable, "autolamp") && (lampVal != -1)) {
-        autoLamp = val;
-        if (autoLamp) {
+    else if (!strcmp(tCommandString, "autolamp") && (lampBrightnessPercentage != -1)) {
+        autoLampValue = val;
+        if (autoLampValue) {
             if (streamCount > 0)
-                setLamp(lampVal);
+                setLamp(lampBrightnessPercentage);
             else
                 setLamp(0);
         } else {
-            setLamp(lampVal);
+            setLamp(lampBrightnessPercentage);
         }
-    } else if (!strcmp(variable, "lamp") && (lampVal != -1)) {
-        lampVal = constrain(val, 0, 100);
-        if (autoLamp) {
+    } else if (!strcmp(tCommandString, "lamp") && (lampBrightnessPercentage != -1)) {
+        lampBrightnessPercentage = constrain(val, 0, 100);
+        if (autoLampValue) {
             if (streamCount > 0)
-                setLamp(lampVal);
+                setLamp(lampBrightnessPercentage);
             else
                 setLamp(0);
         } else {
-            setLamp(lampVal);
+            setLamp(lampBrightnessPercentage);
         }
-    } else if (!strcmp(variable, "save_prefs")) {
+    } else if (!strcmp(tCommandString, "save_prefs")) {
         if (filesystem)
             savePrefs(SPIFFS);
-    } else if (!strcmp(variable, "clear_prefs")) {
+    } else if (!strcmp(tCommandString, "clear_prefs")) {
         if (filesystem)
             removePrefs(SPIFFS);
-    } else if (!strcmp(variable, "reboot")) {
+    } else if (!strcmp(tCommandString, "reboot")) {
         // If the TWDT was not initialized automatically on startup, manually intialize it now
 #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
         esp_task_wdt_config_t twdt_config = { .timeout_ms = 3000, .idle_core_mask = 0x03,    // Bitmask of all cores
@@ -405,12 +436,12 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
             delay(150);
             Serial.print('.');
         }
-    } else if (ServoAndMotorCommandInterpreter(variable, val)) {
+    } else if (ServoAndMotorCommandInterpreter(tCommandString, val)) {
         // do nothing here;
     } else {
         res = -1;
         Serial.print("String=");
-        Serial.print(variable);
+        Serial.print(tCommandString);
         Serial.print(" value=");
         Serial.println(val);
     }
@@ -421,15 +452,28 @@ static esp_err_t cmd_handler(httpd_req_t *req) {
     return httpd_resp_send(req, NULL, 0);
 }
 
+/*
+ * request to send Application status to GUI
+ */
 static esp_err_t status_handler(httpd_req_t *req) {
+    Serial.println("\r\nStatus requested via Web");
+    Serial.print("LastMotorSpeed=");
+    Serial.println(LastMotorSpeed);
+
     static char json_response[1024];
     sensor_t *s = esp_camera_sensor_get();
     char *p = json_response;
     *p++ = '{';
-    p += sprintf(p, "\"lamp\":%d,", lampVal);
-    p += sprintf(p, "\"autolamp\":%d,", autoLamp);
-    p += sprintf(p, "\"pan\":%d,", ServoPanDegree);
-    p += sprintf(p, "\"motor-speed\":%d,", LastMotorSpeed);
+    if (lampBrightnessPercentage != -1) {
+        p += sprintf(p, "\"lamp\":%d,", lampBrightnessPercentage);
+        p += sprintf(p, "\"autolamp\":%d,", autoLampValue);
+    }
+    if (sPanServoIsSupported) {
+        p += sprintf(p, "\"pan\":%d,", ServoPanDegree);
+    }
+    if (sOnePWMMotorIsSupported) {
+        p += sprintf(p, "\"motor-speed\":%d,", LastMotorSpeed);
+    }
     p += sprintf(p, "\"framesize\":%u,", s->status.framesize);
     p += sprintf(p, "\"quality\":%u,", s->status.quality);
     p += sprintf(p, "\"brightness\":%d,", s->status.brightness);
@@ -460,6 +504,32 @@ static esp_err_t status_handler(httpd_req_t *req) {
     p += sprintf(p, "\"rotate\":\"%d\",", myRotation);
     p += sprintf(p, "\"rssi\":\"%d\",", WiFi.RSSI());
     p += sprintf(p, "\"stream_url\":\"%s\"", streamURL);
+    *p++ = '}';
+    *p++ = 0;
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    return httpd_resp_send(req, json_response, strlen(json_response));
+}
+
+static esp_err_t fps_info_handler(httpd_req_t *req) {
+    float tFPS = 0.0;
+    Serial.print("FrameCount=");
+    Serial.print(sFpsFrameCount);
+    uint32_t tDeltaMillis = (sLastFrameTime - sFirstFrameTime) / 1000;
+    if (sFpsFrameCount > 0) {
+        tFPS = (1000.0 * sFpsFrameCount) / tDeltaMillis;
+        // set for new measurement
+        sFirstFrameTime = sLastFrameTime; // set time for first
+        sFpsFrameCount = 0;
+    }
+
+    Serial.print(" FPS=");
+    Serial.println(tFPS);
+
+    static char json_response[64];
+    char *p = json_response;
+    *p++ = '{';
+    p += sprintf(p, "\"fps\":\"%.1f\"", tFPS);
     *p++ = '}';
     *p++ = 0;
     httpd_resp_set_type(req, "application/json");
@@ -511,7 +581,7 @@ static esp_err_t dump_handler(httpd_req_t *req) {
     serialDump();
     static char dumpOut[2000] = "";
     char *d = dumpOut;
-    // Header
+// Header
     d += sprintf(d, "<html><head><meta charset=\"utf-8\">\n");
     d += sprintf(d, "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">\n");
     d += sprintf(d, "<title>%s - Status</title>\n", sApplicationName);
@@ -526,17 +596,17 @@ static esp_err_t dump_handler(httpd_req_t *req) {
         d += sprintf(d, "<h2 style=\"color:red;\">(the serial log may give more information)</h2><br>\n");
     }
     d += sprintf(d, "<h1>ESP32 Cam Webserver</h1>\n");
-    // Module
+// Module
     d += sprintf(d, "Name: %s<br>\n", sApplicationName);
     d += sprintf(d, "Firmware: %s (base: %s)<br>\n", sCompileTimestamp, sExampleVersion);
     float sketchPct = 100 * sketchSize / sketchSpace;
     d += sprintf(d, "Sketch Size: %i (total: %i, %.1f%% used)<br>\n", sketchSize, sketchSpace, sketchPct);
     d += sprintf(d, "MD5: %s<br>\n", sketchMD5.c_str());
     d += sprintf(d, "ESP sdk: %s<br>\n", ESP.getSdkVersion());
-    // Network
+// Network
     d += sprintf(d, "<h2>WiFi</h2>\n");
-    if (accesspoint) {
-        if (captivePortal) {
+    if (sInAccesspointMode) {
+        if (sCaptivePortalEnabled) {
             d += sprintf(d, "Mode: AccessPoint with captive portal<br>\n");
         } else {
             d += sprintf(d, "Mode: AccessPoint<br>\n");
@@ -551,7 +621,7 @@ static esp_err_t dump_handler(httpd_req_t *req) {
         d += sprintf(d, "BSSID: %s<br>\n", bssid.c_str());
     }
     d += sprintf(d, "IP address: %d.%d.%d.%d<br>\n", ip[0], ip[1], ip[2], ip[3]);
-    if (!accesspoint) {
+    if (!sInAccesspointMode) {
         d += sprintf(d, "Netmask: %d.%d.%d.%d<br>\n", net[0], net[1], net[2], net[3]);
         d += sprintf(d, "Gateway: %d.%d.%d.%d<br>\n", gw[0], gw[1], gw[2], gw[3]);
     }
@@ -560,7 +630,7 @@ static esp_err_t dump_handler(httpd_req_t *req) {
     WiFi.macAddress(mac);
     d += sprintf(d, "MAC: %02X:%02X:%02X:%02X:%02X:%02X<br>\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 
-    // System
+// System
     d += sprintf(d, "<h2>System</h2>\n");
     if (haveTime) {
         struct tm timeinfo;
@@ -582,15 +652,15 @@ static esp_err_t dump_handler(httpd_req_t *req) {
     d += sprintf(d, "Up: %" PRId64 ":%02i:%02i:%02i (d:h:m:s)<br>\n", upDays, upHours, upMin, upSec);
     d += sprintf(d, "Active streams: %i, Previous streams: %lu, Images captured: %lu<br>\n", streamCount, streamsServed,
             imagesServed);
-    d += sprintf(d, "Freq: %i MHz<br>\n", ESP.getCpuFreqMHz());
+    d += sprintf(d, "Freq: %li MHz<br>\n", ESP.getCpuFreqMHz());
     d +=
             sprintf(d,
                     "<span title=\"NOTE: Internal temperature sensor readings can be innacurate on the ESP32-c1 chipset, and may vary significantly between devices!\">");
     d += sprintf(d, "MCU temperature : %i &deg;C, %i &deg;F</span>\n<br>", McuTc, McuTf);
-    d += sprintf(d, "Heap: %i, free: %i, min free: %i, max block: %i<br>\n", ESP.getHeapSize(), ESP.getFreeHeap(),
+    d += sprintf(d, "Heap: %li, free: %li, min free: %li, max block: %li<br>\n", ESP.getHeapSize(), ESP.getFreeHeap(),
             ESP.getMinFreeHeap(), ESP.getMaxAllocHeap());
     if (psramFound()) {
-        d += sprintf(d, "Psram: %i, free: %i, min free: %i, max block: %i<br>\n", ESP.getPsramSize(), ESP.getFreePsram(),
+        d += sprintf(d, "Psram: %li, free: %li, min free: %li, max block: %li<br>\n", ESP.getPsramSize(), ESP.getFreePsram(),
                 ESP.getMinFreePsram(), ESP.getMaxAllocPsram());
     } else {
         d += sprintf(d, "Psram: <span style=\"color:red;\">Not found</span>, please check your board configuration.<br>\n");
@@ -604,14 +674,14 @@ static esp_err_t dump_handler(httpd_req_t *req) {
         d += sprintf(d, "- saving and restoring camera settings will not function without this.<br>\n");
     }
 
-    // Footer
+// Footer
     d += sprintf(d, "<br><div class=\"input-group\">\n");
     d +=
             sprintf(d,
                     "<button title=\"Instant Refresh; the page reloads every minute anyway\" onclick=\"location.replace(document.URL)\">Refresh</button>\n");
     d += sprintf(d, "<button title=\"Close this page\" onclick=\"javascript:window.close()\">Close</button>\n");
     d += sprintf(d, "</div>\n</body>\n");
-    // A javascript timer to refresh the page every minute.
+// A javascript timer to refresh the page every minute.
     d += sprintf(d, "<script>\nsetTimeout(function(){\nlocation.replace(document.URL);\n}, 60000);\n");
     d += sprintf(d, "</script>\n</html>\n");
     *d++ = 0;
@@ -656,7 +726,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
     char view[32] = { 0, };
 
     flashLED(75);
-    // See if we have a specific target (full/simple/portal) and serve as appropriate
+// See if we have a specific target (full/simple/portal) and serve as appropriate
     buf_len = httpd_req_get_url_query_len(req) + 1;
     if (buf_len > 1) {
         buf = (char*) malloc(buf_len);
@@ -681,7 +751,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
         // no target specified; default.
         strcpy(view, default_index);
         // If captive portal is active send that instead
-        if (captivePortal) {
+        if (sCaptivePortalEnabled) {
             strcpy(view, "portal");
         }
     }
@@ -726,25 +796,40 @@ void startCameraServer(int hPort, int sPort) {
     httpd_config_t config = HTTPD_DEFAULT_CONFIG();
     config.max_uri_handlers = 12; // we use more than the default 8 (on port 80)
 
-    httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL };
-    httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL };
-    httpd_uri_t cmd_uri = { .uri = "/control", .method = HTTP_GET, .handler = cmd_handler, .user_ctx = NULL };
-    httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler, .user_ctx = NULL };
-    httpd_uri_t style_uri = { .uri = "/style.css", .method = HTTP_GET, .handler = style_handler, .user_ctx = NULL };
+    httpd_uri_t index_uri = { .uri = "/", .method = HTTP_GET, .handler = index_handler, .user_ctx = NULL, .is_websocket = false,
+            .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t status_uri = { .uri = "/status", .method = HTTP_GET, .handler = status_handler, .user_ctx = NULL, .is_websocket =
+            false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t cmd_uri = { .uri = "/control", .method = HTTP_GET, .handler = cmd_handler, .user_ctx = NULL, .is_websocket = false,
+            .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler, .user_ctx = NULL, .is_websocket =
+            false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t style_uri = { .uri = "/style.css", .method = HTTP_GET, .handler = style_handler, .user_ctx = NULL, .is_websocket =
+            false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
     httpd_uri_t favicon_16x16_uri = { .uri = "/favicon-16x16.png", .method = HTTP_GET, .handler = favicon_16x16_handler, .user_ctx =
-    NULL };
+    NULL, .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
     httpd_uri_t favicon_32x32_uri = { .uri = "/favicon-32x32.png", .method = HTTP_GET, .handler = favicon_32x32_handler, .user_ctx =
-    NULL };
-    httpd_uri_t favicon_ico_uri = { .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_ico_handler, .user_ctx = NULL };
-    httpd_uri_t logo_svg_uri = { .uri = "/logo.svg", .method = HTTP_GET, .handler = logo_svg_handler, .user_ctx = NULL };
-    httpd_uri_t dump_uri = { .uri = "/dump", .method = HTTP_GET, .handler = dump_handler, .user_ctx = NULL };
-    httpd_uri_t stream_uri = { .uri = "/", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL };
-    httpd_uri_t streamviewer_uri = { .uri = "/view", .method = HTTP_GET, .handler = streamviewer_handler, .user_ctx = NULL };
-    httpd_uri_t info_uri = { .uri = "/info", .method = HTTP_GET, .handler = info_handler, .user_ctx = NULL };
-    httpd_uri_t error_uri = { .uri = "/", .method = HTTP_GET, .handler = error_handler, .user_ctx = NULL };
-    httpd_uri_t viewerror_uri = { .uri = "/view", .method = HTTP_GET, .handler = error_handler, .user_ctx = NULL };
+    NULL, .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t favicon_ico_uri = { .uri = "/favicon.ico", .method = HTTP_GET, .handler = favicon_ico_handler, .user_ctx = NULL,
+            .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t logo_svg_uri = { .uri = "/logo.svg", .method = HTTP_GET, .handler = logo_svg_handler, .user_ctx = NULL,
+            .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t dump_uri = { .uri = "/dump", .method = HTTP_GET, .handler = dump_handler, .user_ctx = NULL, .is_websocket = false,
+            .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t stream_uri = { .uri = "/", .method = HTTP_GET, .handler = stream_handler, .user_ctx = NULL, .is_websocket = false,
+            .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t streamviewer_uri = { .uri = "/view", .method = HTTP_GET, .handler = streamviewer_handler, .user_ctx = NULL,
+            .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t fps_info_uri = { .uri = "/fps_info", .method = HTTP_GET, .handler = fps_info_handler, .user_ctx = NULL,
+            .is_websocket = false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t info_uri = { .uri = "/info", .method = HTTP_GET, .handler = info_handler, .user_ctx = NULL, .is_websocket = false,
+            .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t error_uri = { .uri = "/", .method = HTTP_GET, .handler = error_handler, .user_ctx = NULL, .is_websocket = false,
+            .handle_ws_control_frames = false, .supported_subprotocol = NULL };
+    httpd_uri_t viewerror_uri = { .uri = "/view", .method = HTTP_GET, .handler = error_handler, .user_ctx = NULL, .is_websocket =
+            false, .handle_ws_control_frames = false, .supported_subprotocol = NULL };
 
-    // Request Handlers; config.max_uri_handlers (above) must be >= the number of handlers
+// Request Handlers; config.max_uri_handlers (above) must be >= the number of handlers
     config.server_port = hPort;
     config.ctrl_port = hPort;
     Serial.printf("Starting web server on port: '%d'\r\n", config.server_port);
@@ -755,6 +840,7 @@ void startCameraServer(int hPort, int sPort) {
             httpd_register_uri_handler(camera_httpd, &index_uri);
             httpd_register_uri_handler(camera_httpd, &cmd_uri);
             httpd_register_uri_handler(camera_httpd, &status_uri);
+            httpd_register_uri_handler(camera_httpd, &fps_info_uri);
             httpd_register_uri_handler(camera_httpd, &capture_uri);
         }
         httpd_register_uri_handler(camera_httpd, &style_uri);
